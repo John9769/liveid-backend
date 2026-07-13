@@ -114,7 +114,14 @@ async function fireReferralCommission(transaction, userId) {
 
 exports.handleCallback = async (req, res) => {
   try {
-    const { billcode, status_id } = req.body;
+    console.log('CALLBACK HIT method=%s content-type=%s body=%j query=%j', req.method, req.headers['content-type'], req.body, req.query);
+    const source = (req.body && Object.keys(req.body).length) ? req.body : req.query;
+    const { billcode, status_id } = source || {};
+
+    if (!billcode) {
+      console.error('handleCallback: no billcode. body=', req.body, 'query=', req.query);
+      return res.status(400).send('No billcode');
+    }
 
     const transaction = await prisma.transaction.findFirst({
       where: { toyyibRef: billcode },
