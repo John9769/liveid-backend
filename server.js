@@ -13,6 +13,7 @@ const waitlistRoutes = require('./routes/waitlistRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const celebrityRoutes = require('./routes/celebrityRoutes');
 const pricingRoutes = require('./routes/pricingRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 require('./cron');
 
 const app = express();
@@ -61,6 +62,7 @@ app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/celebrities', celebrityRoutes);
 app.use('/api/pricing', pricingRoutes);
+app.use('/api/admin', adminRoutes);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
