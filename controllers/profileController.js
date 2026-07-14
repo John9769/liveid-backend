@@ -129,6 +129,17 @@ exports.getPublicProfile = async (req, res) => {
   try {
     const { handleName } = req.params;
 
+    // Log this visit — fire and forget, never block the response
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || null;
+    prisma.verifyLog.create({
+      data: {
+        handleName: handleName.toLowerCase(),
+        ip,
+        userAgent: req.headers['user-agent'] || null,
+        referer: req.headers['referer'] || null,
+      },
+    }).catch(() => {}); // silent fail — never break verify for logging
+
     const handle = await prisma.handle.findUnique({
       where: { name: handleName.toLowerCase() },
       include: {

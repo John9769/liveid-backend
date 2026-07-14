@@ -480,3 +480,19 @@ model PricingConfig {
 
   key         PricingKey @unique
 }
+
+// ============================================================
+// VERIFY LOG
+// ============================================================
+
+model VerifyLog {
+  id          String   @id @default(uuid())
+  handleName  String
+  ip          String?
+  userAgent   String?
+  referer     String?
+  createdAt   DateTime @default(now())
+
+  @@index([handleName])
+  @@index([createdAt])
+}

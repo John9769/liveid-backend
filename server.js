@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 
+const rateLimit = require('express-rate-limit');
 const authRoutes = require('./routes/authRoutes');
 const handleRoutes = require('./routes/handleRoutes');
 const transactionRoutes = require('./routes/transactionRoutes');
@@ -20,6 +21,23 @@ const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+// Rate limit — verify page only
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // 30 requests per IP per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please slow down.' },
+});
+app.use('/api/profiles/public', verifyLimiter);
 
 app.get('/', (req, res) => {
   res.json({ status: 'LiveID backend running' });
