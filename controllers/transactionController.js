@@ -128,6 +128,12 @@ exports.handleCallback = async (req, res) => {
     });
     if (!transaction) return res.status(404).json({ error: 'Transaction not found' });
 
+    // Global duplicate guard — if already SUCCESS, return 200 immediately
+    if (transaction.status === 'SUCCESS') {
+      console.log('Duplicate callback ignored — already SUCCESS:', transaction.id);
+      return res.status(200).send('OK');
+    }
+
     if (status_id !== '1') {
       await prisma.transaction.update({
         where: { id: transaction.id },
@@ -290,6 +296,18 @@ exports.handleCallback = async (req, res) => {
 
     // Handle REGISTRATION
     const data = transaction.pendingData;
+
+    // Duplicate callback guard — if already SUCCESS, return 200 immediately
+    if (transaction.status === 'SUCCESS') {
+      console.log('Duplicate callback ignored for transaction:', transaction.id);
+      return res.status(200).send('OK');
+    }
+
+    // Mark as processing to block concurrent retries
+    await prisma.transaction.update({
+      where: { id: transaction.id },
+      data: { status: 'SUCCESS' },
+    });
 
     const newUser = await prisma.user.create({
       data: {
