@@ -474,3 +474,18 @@ exports.updatePricing = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// ============================================================
+// INVITATIONS
+// ============================================================
+
+exports.getInvitations = async (req, res) => {
+  try {
+    const invitations = await prisma.invitation.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ invitations });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};

@@ -509,3 +509,24 @@ model Admin {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+// ============================================================
+// INVITATION
+// ============================================================
+
+model Invitation {
+  id              String   @id @default(uuid())
+  token           String   @unique
+  email           String
+  phone           String
+  name            String
+  handle          String
+  role            String   // REFERRAL, SUPER_REFERRAL, BOTH
+  superReferralId String?
+  bankName        String?
+  bankAccount     String?
+  bankAccountName String?
+  isUsed          Boolean  @default(false)
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+}

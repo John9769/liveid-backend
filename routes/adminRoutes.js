@@ -45,4 +45,7 @@ router.put('/waitlist/:waitlistId', adminController.updateWaitlistStatus);
 router.get('/pricing', adminController.getPricing);
 router.patch('/pricing/:key', adminController.updatePricing);
 
+// Invitations
+router.get('/invitations', adminController.getInvitations);
+
 module.exports = router;
