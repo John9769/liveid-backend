@@ -6,6 +6,9 @@ const adminAuth = require('../middleware/adminAuth');
 // Public — FE validates referral code from cookie
 router.get('/validate/:code', referralController.validateReferralCode);
 
+// Authenticated user — referral dashboard
+router.get('/my-dashboard/:email', referralController.getMyDashboard);
+
 // Admin only — all management endpoints
 router.post('/', adminAuth, referralController.createReferral);
 router.get('/', adminAuth, referralController.getAllReferrals);

@@ -319,3 +319,52 @@ exports.validateReferralCode = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.getMyDashboard = async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const referral = await prisma.referral.findFirst({
+      where: { email: decodeURIComponent(email), isActive: true },
+      include: {
+        superReferral: {
+          select: { id: true, name: true, code: true },
+        },
+        subReferrals: {
+          select: {
+            id: true, name: true, code: true,
+            totalEarnings: true, isActive: true,
+          },
+        },
+        earnings: {
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        },
+        overrideEarnings: {
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        },
+      },
+    });
+
+    if (!referral) return res.status(404).json({ error: 'Not a referral' });
+
+    // Count total registrations via this code
+    const totalRegistrations = await prisma.transaction.count({
+      where: {
+        referralCode: referral.code,
+        status: 'SUCCESS',
+        type: 'REGISTRATION',
+      },
+    });
+
+    res.json({
+      referral,
+      totalRegistrations,
+      unpaidDirect: referral.totalEarnings - referral.totalPaid,
+      unpaidOverride: referral.totalOverrideEarnings - referral.totalOverridePaid,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
