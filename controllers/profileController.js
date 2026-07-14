@@ -167,6 +167,11 @@ exports.getPublicProfile = async (req, res) => {
       });
     }
 
+    // Check if handle owner is an active referral
+    const referral = await prisma.referral.findFirst({
+      where: { email: user.email, isActiveReferral: true, isActive: true },
+    });
+
     res.json({
       verified: true,
       handle: handle.name,
@@ -184,6 +189,8 @@ exports.getPublicProfile = async (req, res) => {
       twitter: user.profile?.twitter || null,
       youtube: user.profile?.youtube || null,
       website: user.profile?.website || null,
+      isReferral: !!referral,
+      referralCode: referral?.code || null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
