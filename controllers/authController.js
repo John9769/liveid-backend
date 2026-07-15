@@ -361,3 +361,66 @@ exports.changePassword = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// ============================================================
+// DELETE ACCOUNT
+// ============================================================
+
+exports.deleteAccount = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { confirmation } = req.body;
+
+    if (confirmation !== 'DELETE') {
+      return res.status(400).json({ error: 'Invalid confirmation' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { activeHandle: true, profile: true },
+    });
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Delete selfie from Cloudinary
+    if (user.profile?.photoUrl) {
+      try {
+        const publicId = user.profile.photoUrl.split('/').slice(-2).join('/').split('.')[0];
+        await cloudinary.uploader.destroy(publicId);
+      } catch (err) {
+        console.error('Cloudinary delete error:', err.message);
+      }
+    }
+
+    // Retire the handle
+    if (user.activeHandle) {
+      await prisma.handle.update({
+        where: { id: user.activeHandle.id },
+        data: {
+          status: 'RETIRED',
+          ownerId: null,
+          retiredAt: new Date(),
+        },
+      });
+    }
+
+    // Delete user profile
+    if (user.profile) {
+      await prisma.userProfile.delete({ where: { userId } });
+    }
+
+    // Delete trust score
+    await prisma.trustScore.deleteMany({ where: { userId } });
+
+    // Delete transactions
+    await prisma.transaction.deleteMany({ where: { userId } });
+
+    // Delete user
+    await prisma.user.delete({ where: { id: userId } });
+
+    res.json({ message: 'Account deleted successfully' });
+  } catch (err) {
+    console.error('deleteAccount error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};

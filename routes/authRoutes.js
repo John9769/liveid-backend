@@ -13,5 +13,6 @@ router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.post('/change-password', authController.changePassword);
 router.get('/profile/:userId', authController.getUserProfile);
+router.delete('/account/:userId', authController.deleteAccount);
 
 module.exports = router;
