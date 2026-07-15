@@ -31,6 +31,12 @@ async function fireReferralCommission(transaction, userId) {
     });
     if (!referral || !referral.isActive || !referral.isActiveReferral) return;
 
+    // ReferralEarning.transactionId is @unique — never double-pay on a retry
+    const existingEarning = await prisma.referralEarning.findUnique({
+      where: { transactionId: transaction.id },
+    });
+    if (existingEarning) return;
+
     const pricing = await getPricing();
     let commission = 0;
     let earningType = 'STANDARD_REG';
@@ -57,7 +63,6 @@ async function fireReferralCommission(transaction, userId) {
 
     if (commission <= 0) return;
 
-    // Calculate override commission
     let overrideCommission = 0;
     let superReferral = null;
 
@@ -73,7 +78,6 @@ async function fireReferralCommission(transaction, userId) {
       }
     }
 
-    // Create ReferralEarning record
     await prisma.referralEarning.create({
       data: {
         referralId: referral.id,
@@ -87,13 +91,11 @@ async function fireReferralCommission(transaction, userId) {
       },
     });
 
-    // Update direct referral totalEarnings
     await prisma.referral.update({
       where: { id: referral.id },
       data: { totalEarnings: { increment: commission } },
     });
 
-    // Update Super Referral totalOverrideEarnings
     if (superReferral && overrideCommission > 0) {
       await prisma.referral.update({
         where: { id: superReferral.id },
@@ -101,7 +103,6 @@ async function fireReferralCommission(transaction, userId) {
       });
     }
 
-    // Update transaction with commission amount
     await prisma.transaction.update({
       where: { id: transaction.id },
       data: { referralCommission: commission },
@@ -115,6 +116,7 @@ async function fireReferralCommission(transaction, userId) {
 exports.handleCallback = async (req, res) => {
   try {
     console.log('CALLBACK HIT method=%s content-type=%s body=%j query=%j', req.method, req.headers['content-type'], req.body, req.query);
+
     const source = (req.body && Object.keys(req.body).length) ? req.body : req.query;
     const { billcode, status_id } = source || {};
 
@@ -128,13 +130,13 @@ exports.handleCallback = async (req, res) => {
     });
     if (!transaction) return res.status(404).json({ error: 'Transaction not found' });
 
-    // Global duplicate guard — if already SUCCESS, return 200 immediately
+    // Duplicate guard — ToyyibPay retries. Already done = 200 and stop.
     if (transaction.status === 'SUCCESS') {
       console.log('Duplicate callback ignored — already SUCCESS:', transaction.id);
       return res.status(200).send('OK');
     }
 
-    if (status_id !== '1') {
+    if (String(status_id) !== '1') {
       await prisma.transaction.update({
         where: { id: transaction.id },
         data: { status: 'FAILED' },
@@ -142,17 +144,21 @@ exports.handleCallback = async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // Handle RENEWAL
+    // ========================================================
+    // RENEWAL
+    // ========================================================
     if (transaction.type === 'RENEWAL') {
       const user = await prisma.user.findUnique({ where: { id: transaction.userId } });
       if (!user) return res.status(404).json({ error: 'User not found' });
 
-      const newExpiry = new Date(user.registrationExpiry || new Date());
-      newExpiry.setFullYear(newExpiry.getFullYear() + 1);
+      const base = user.registrationExpiry && new Date(user.registrationExpiry) > new Date()
+        ? new Date(user.registrationExpiry)
+        : new Date();
+      base.setFullYear(base.getFullYear() + 1);
 
       await prisma.user.update({
         where: { id: user.id },
-        data: { registrationExpiry: newExpiry },
+        data: { registrationExpiry: base },
       });
 
       await prisma.transaction.update({
@@ -164,47 +170,99 @@ exports.handleCallback = async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // Handle VAULT_PURCHASE
+    // ========================================================
+    // VAULT_PURCHASE
+    // ========================================================
     if (transaction.type === 'VAULT_PURCHASE') {
       const data = transaction.pendingData;
+      if (!data?.vaultHandleId) {
+        console.error('VAULT_PURCHASE missing vaultHandleId:', transaction.id);
+        return res.status(500).json({ error: 'Corrupt transaction data' });
+      }
+
+      const vaultHandle = await prisma.vaultHandle.findUnique({ where: { id: data.vaultHandleId } });
+      if (!vaultHandle) return res.status(404).json({ error: 'Vault handle not found' });
+
+      const user = await prisma.user.findUnique({
+        where: { id: transaction.userId },
+        include: { activeHandle: true },
+      });
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      // Retire the old handle — a user holds one active handle
+      if (user.activeHandle) {
+        await prisma.handle.update({
+          where: { id: user.activeHandle.id },
+          data: { status: 'RETIRED', retiredAt: new Date(), ownerId: null },
+        });
+      }
 
       await prisma.vaultHandle.update({
-        where: { id: data.vaultHandleId },
-        data: {
-          status: 'SOLD',
-          ownerId: transaction.userId,
-          soldAt: new Date(),
-        },
+        where: { id: vaultHandle.id },
+        data: { status: 'SOLD', ownerId: user.id, soldAt: new Date() },
       });
 
+      // Mirror into Handle so verification pages resolve the name
+      const handleHash = generateHandleHash(user.id, vaultHandle.name, user.faceId, new Date().toISOString());
+      const existingHandle = await prisma.handle.findUnique({ where: { name: vaultHandle.name } });
+
+      let handle;
+      if (existingHandle) {
+        handle = await prisma.handle.update({
+          where: { id: existingHandle.id },
+          data: { status: 'ACTIVE', ownerId: user.id, isVault: true, retiredAt: null },
+        });
+      } else {
+        handle = await prisma.handle.create({
+          data: {
+            name: vaultHandle.name,
+            baseWord: vaultHandle.baseWord,
+            tier: 'GOLDEN',
+            price: vaultHandle.buyNowPrice,
+            status: 'ACTIVE',
+            ownerId: user.id,
+            isVault: true,
+            handleHash,
+          },
+        });
+      }
+
+      const expiry = new Date();
+      expiry.setFullYear(expiry.getFullYear() + 1);
+
       await prisma.user.update({
-        where: { id: transaction.userId },
+        where: { id: user.id },
         data: {
           tier: 'VAULT',
-          registrationExpiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          registrationExpiry: expiry,
+          renewalAmount: vaultHandle.renewalFee,
         },
       });
 
       await prisma.transaction.update({
         where: { id: transaction.id },
-        data: { status: 'SUCCESS' },
+        data: { status: 'SUCCESS', handleId: handle.id },
       });
 
-      await fireReferralCommission(transaction, transaction.userId);
+      await fireReferralCommission(transaction, user.id);
       return res.status(200).send('OK');
     }
 
-    // Handle VAULT_RENEWAL
+    // ========================================================
+    // VAULT_RENEWAL
+    // ========================================================
     if (transaction.type === 'VAULT_RENEWAL') {
       const user = await prisma.user.findUnique({ where: { id: transaction.userId } });
       if (!user) return res.status(404).json({ error: 'User not found' });
 
-      const newExpiry = new Date(user.registrationExpiry || new Date());
-      newExpiry.setFullYear(newExpiry.getFullYear() + 1);
+      const base = user.registrationExpiry && new Date(user.registrationExpiry) > new Date()
+        ? new Date(user.registrationExpiry)
+        : new Date();
+      base.setFullYear(base.getFullYear() + 1);
 
       await prisma.user.update({
         where: { id: user.id },
-        data: { registrationExpiry: newExpiry },
+        data: { registrationExpiry: base },
       });
 
       await prisma.transaction.update({
@@ -216,9 +274,16 @@ exports.handleCallback = async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // Handle PREMIUM_PURCHASE
+    // ========================================================
+    // PREMIUM_PURCHASE
+    // ========================================================
     if (transaction.type === 'PREMIUM_PURCHASE') {
       const data = transaction.pendingData;
+      if (!data?.handleName) {
+        console.error('PREMIUM_PURCHASE missing handleName:', transaction.id);
+        return res.status(500).json({ error: 'Corrupt transaction data' });
+      }
+
       const user = await prisma.user.findUnique({
         where: { id: transaction.userId },
         include: { activeHandle: true },
@@ -232,12 +297,20 @@ exports.handleCallback = async (req, res) => {
         });
       }
 
+      const handleHash = generateHandleHash(user.id, data.handleName, user.faceId, new Date().toISOString());
       const existingHandle = await prisma.handle.findUnique({ where: { name: data.handleName } });
+
       let handle;
       if (existingHandle) {
         handle = await prisma.handle.update({
           where: { id: existingHandle.id },
-          data: { status: 'ACTIVE', ownerId: user.id, isVaultVariant: true },
+          data: {
+            status: 'ACTIVE',
+            ownerId: user.id,
+            isVaultVariant: true,
+            handleHash,
+            retiredAt: null,
+          },
         });
       } else {
         handle = await prisma.handle.create({
@@ -250,15 +323,19 @@ exports.handleCallback = async (req, res) => {
             status: 'ACTIVE',
             ownerId: user.id,
             isVaultVariant: true,
+            handleHash,
           },
         });
       }
+
+      const expiry = new Date();
+      expiry.setFullYear(expiry.getFullYear() + 1);
 
       await prisma.user.update({
         where: { id: user.id },
         data: {
           tier: 'PREMIUM_VARIANT',
-          registrationExpiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          registrationExpiry: expiry,
           renewalAmount: data.renewalAmount,
         },
       });
@@ -272,17 +349,21 @@ exports.handleCallback = async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // Handle PREMIUM_RENEWAL
+    // ========================================================
+    // PREMIUM_RENEWAL
+    // ========================================================
     if (transaction.type === 'PREMIUM_RENEWAL') {
       const user = await prisma.user.findUnique({ where: { id: transaction.userId } });
       if (!user) return res.status(404).json({ error: 'User not found' });
 
-      const newExpiry = new Date(user.registrationExpiry || new Date());
-      newExpiry.setFullYear(newExpiry.getFullYear() + 1);
+      const base = user.registrationExpiry && new Date(user.registrationExpiry) > new Date()
+        ? new Date(user.registrationExpiry)
+        : new Date();
+      base.setFullYear(base.getFullYear() + 1);
 
       await prisma.user.update({
         where: { id: user.id },
-        data: { registrationExpiry: newExpiry },
+        data: { registrationExpiry: base },
       });
 
       await prisma.transaction.update({
@@ -294,93 +375,100 @@ exports.handleCallback = async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // Handle REGISTRATION
+    // ========================================================
+    // REGISTRATION
+    // Create everything in one transaction. If any step fails,
+    // nothing is written and the row stays PENDING so a retry works.
+    // ========================================================
     const data = transaction.pendingData;
-
-    // Duplicate callback guard — if already SUCCESS, return 200 immediately
-    if (transaction.status === 'SUCCESS') {
-      console.log('Duplicate callback ignored for transaction:', transaction.id);
-      return res.status(200).send('OK');
+    if (!data?.phone || !data?.email || !data?.passwordHash || !data?.faceId || !data?.handleName) {
+      console.error('REGISTRATION corrupt pendingData:', transaction.id, data);
+      return res.status(500).json({ error: 'Corrupt transaction data' });
     }
 
-    // Mark as processing to block concurrent retries
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: { status: 'SUCCESS' },
-    });
-
-    const newUser = await prisma.user.create({
-      data: {
-        genericId: generateGenericId(),
-        phone: data.phone,
-        email: data.email,
-        passwordHash: data.passwordHash,
-        faceId: data.faceId,
-        isVerified: true,
-        verifiedAt: new Date(),
-        registrationExpiry: new Date(data.registrationExpiry),
-        renewalAmount: data.renewalAmount,
-        referralCode: data.referralCode || null,
-        tier: 'STANDARD',
-      },
-    });
-
-    const existingHandle = await prisma.handle.findUnique({
-      where: { name: data.handleName },
-    });
-
-    let handle;
-    if (existingHandle) {
-      handle = await prisma.handle.update({
-        where: { id: existingHandle.id },
-        data: { status: 'ACTIVE', ownerId: newUser.id },
+    const result = await prisma.$transaction(async (tx) => {
+      const newUser = await tx.user.create({
+        data: {
+          genericId: generateGenericId(),
+          phone: data.phone,
+          email: data.email,
+          passwordHash: data.passwordHash,
+          faceId: data.faceId,
+          isVerified: true,
+          verifiedAt: new Date(),
+          registrationExpiry: new Date(data.registrationExpiry),
+          renewalAmount: data.renewalAmount,
+          referralCode: data.referralCode || null,
+          tier: 'STANDARD',
+        },
       });
-    } else {
+
       const handleHash = generateHandleHash(
         newUser.id,
         data.handleName,
         data.faceId,
         new Date().toISOString()
       );
-      handle = await prisma.handle.create({
+
+      const existingHandle = await tx.handle.findUnique({
+        where: { name: data.handleName },
+      });
+
+      let handle;
+      if (existingHandle) {
+        handle = await tx.handle.update({
+          where: { id: existingHandle.id },
+          data: {
+            status: 'ACTIVE',
+            ownerId: newUser.id,
+            handleHash,
+            retiredAt: null,
+          },
+        });
+      } else {
+        handle = await tx.handle.create({
+          data: {
+            name: data.handleName,
+            baseWord: data.baseWord,
+            numberSuffix: data.numberSuffix,
+            tier: data.tier,
+            price: data.handlePrice,
+            status: 'ACTIVE',
+            ownerId: newUser.id,
+            handleHash,
+          },
+        });
+      }
+
+      await tx.userProfile.create({
         data: {
-          name: data.handleName,
-          baseWord: data.baseWord,
-          numberSuffix: data.numberSuffix,
-          tier: data.tier,
-          price: data.handlePrice,
-          status: 'ACTIVE',
-          ownerId: newUser.id,
-          handleHash,
+          userId: newUser.id,
+          photoUrl: data.photoUrl || null,
         },
       });
-    }
 
-    await prisma.userProfile.create({
-      data: {
-        userId: newUser.id,
-        photoUrl: data.photoUrl || null,
-      },
+      await tx.trustScore.create({
+        data: {
+          userId: newUser.id,
+          score: 50,
+          factors: { verified: true, renewal: false, profileComplete: false },
+        },
+      });
+
+      // Status flips to SUCCESS only after everything above succeeded
+      await tx.transaction.update({
+        where: { id: transaction.id },
+        data: {
+          status: 'SUCCESS',
+          userId: newUser.id,
+          handleId: handle.id,
+        },
+      });
+
+      return newUser;
     });
 
-    await prisma.trustScore.create({
-      data: {
-        userId: newUser.id,
-        score: 50,
-        factors: { verified: true, renewal: false, profileComplete: false },
-      },
-    });
-
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: {
-        status: 'SUCCESS',
-        userId: newUser.id,
-        handleId: handle.id,
-      },
-    });
-
-    await fireReferralCommission(transaction, newUser.id);
+    await fireReferralCommission(transaction, result.id);
 
     res.status(200).send('OK');
   } catch (err) {
@@ -420,7 +508,7 @@ exports.initiateRenewal = async (req, res) => {
       },
     });
 
-    const billData = {
+    const billData = new URLSearchParams({
       userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
       categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_RENEWAL,
       billName: 'LiveID Annual Renewal',
@@ -428,7 +516,7 @@ exports.initiateRenewal = async (req, res) => {
       billPriceSetting: 1,
       billPayorInfo: 1,
       billAmount: Math.round((renewalAmount + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/payment/success?transactionId=${transaction.id}`,
+      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
       billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
       billExternalReferenceNo: transaction.id,
       billTo: user.genericId,
@@ -437,14 +525,15 @@ exports.initiateRenewal = async (req, res) => {
       billSplitPayment: 0,
       billPaymentChannel: '2',
       billContentEmail: 'Thank you for renewing your LiveID.',
-    };
+    });
 
     const toyyibResponse = await axios.post(
       'https://toyyibpay.com/index.php/api/createBill',
-      new URLSearchParams(billData)
+      billData.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    const billCode = toyyibResponse.data[0]?.BillCode;
+    const billCode = toyyibResponse.data?.[0]?.BillCode;
     if (!billCode) {
       await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
       return res.status(500).json({ error: 'Failed to create renewal bill' });
@@ -503,7 +592,7 @@ exports.initiateVaultPurchase = async (req, res) => {
       },
     });
 
-    const billData = {
+    const billData = new URLSearchParams({
       userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
       categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_VAULT,
       billName: 'LiveID Vault Purchase',
@@ -511,7 +600,7 @@ exports.initiateVaultPurchase = async (req, res) => {
       billPriceSetting: 1,
       billPayorInfo: 1,
       billAmount: Math.round((totalAmount + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/payment/success?transactionId=${transaction.id}`,
+      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
       billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
       billExternalReferenceNo: transaction.id,
       billTo: user.genericId,
@@ -520,14 +609,15 @@ exports.initiateVaultPurchase = async (req, res) => {
       billSplitPayment: 0,
       billPaymentChannel: '2',
       billContentEmail: 'Thank you for purchasing your LiveID Vault handle.',
-    };
+    });
 
     const toyyibResponse = await axios.post(
       'https://toyyibpay.com/index.php/api/createBill',
-      new URLSearchParams(billData)
+      billData.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    const billCode = toyyibResponse.data[0]?.BillCode;
+    const billCode = toyyibResponse.data?.[0]?.BillCode;
     if (!billCode) {
       await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
       return res.status(500).json({ error: 'Failed to create payment bill' });
@@ -579,7 +669,7 @@ exports.initiateVaultRenewal = async (req, res) => {
       },
     });
 
-    const billData = {
+    const billData = new URLSearchParams({
       userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
       categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_VAULT_RENEWAL,
       billName: 'LiveID Vault Renewal',
@@ -587,7 +677,7 @@ exports.initiateVaultRenewal = async (req, res) => {
       billPriceSetting: 1,
       billPayorInfo: 1,
       billAmount: Math.round((renewalFee + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/payment/success?transactionId=${transaction.id}`,
+      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
       billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
       billExternalReferenceNo: transaction.id,
       billTo: user.genericId,
@@ -596,14 +686,15 @@ exports.initiateVaultRenewal = async (req, res) => {
       billSplitPayment: 0,
       billPaymentChannel: '2',
       billContentEmail: 'Thank you for renewing your LiveID Vault handle.',
-    };
+    });
 
     const toyyibResponse = await axios.post(
       'https://toyyibpay.com/index.php/api/createBill',
-      new URLSearchParams(billData)
+      billData.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    const billCode = toyyibResponse.data[0]?.BillCode;
+    const billCode = toyyibResponse.data?.[0]?.BillCode;
     if (!billCode) {
       await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
       return res.status(500).json({ error: 'Failed to create payment bill' });
@@ -634,11 +725,22 @@ exports.initiatePremiumPurchase = async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    const cleanName = handleName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (!cleanName) return res.status(400).json({ error: 'Invalid handle name' });
+
+    // Vault names are not buyable through the premium path
+    const isVault = await prisma.vaultHandle.findUnique({ where: { name: cleanName } });
+    if (isVault) return res.status(409).json({ error: 'This handle is only available through The Vault' });
+
+    const existing = await prisma.handle.findUnique({ where: { name: cleanName } });
+    if (existing && existing.status === 'ACTIVE') {
+      return res.status(409).json({ error: 'This handle is already taken' });
+    }
+
     const pricing = await getPricing();
     const gatewayFee = pricing.GATEWAY_FEE || 1.00;
 
     const { calculatePricing } = require('./handleController');
-    const cleanName = handleName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     const pricingResult = await calculatePricing(cleanName);
     if (!pricingResult) return res.status(400).json({ error: 'Invalid handle format' });
 
@@ -663,7 +765,7 @@ exports.initiatePremiumPurchase = async (req, res) => {
       },
     });
 
-    const billData = {
+    const billData = new URLSearchParams({
       userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
       categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_PREMIUM,
       billName: 'LiveID Premium Purchase',
@@ -671,7 +773,7 @@ exports.initiatePremiumPurchase = async (req, res) => {
       billPriceSetting: 1,
       billPayorInfo: 1,
       billAmount: Math.round((totalAmount + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/payment/success?transactionId=${transaction.id}`,
+      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
       billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
       billExternalReferenceNo: transaction.id,
       billTo: user.genericId,
@@ -680,14 +782,15 @@ exports.initiatePremiumPurchase = async (req, res) => {
       billSplitPayment: 0,
       billPaymentChannel: '2',
       billContentEmail: 'Thank you for purchasing your LiveID Premium handle.',
-    };
+    });
 
     const toyyibResponse = await axios.post(
       'https://toyyibpay.com/index.php/api/createBill',
-      new URLSearchParams(billData)
+      billData.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    const billCode = toyyibResponse.data[0]?.BillCode;
+    const billCode = toyyibResponse.data?.[0]?.BillCode;
     if (!billCode) {
       await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
       return res.status(500).json({ error: 'Failed to create payment bill' });
@@ -742,7 +845,7 @@ exports.initiatePremiumRenewal = async (req, res) => {
       },
     });
 
-    const billData = {
+    const billData = new URLSearchParams({
       userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
       categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_PREMIUM_RENEWAL,
       billName: 'LiveID Premium Renewal',
@@ -750,7 +853,7 @@ exports.initiatePremiumRenewal = async (req, res) => {
       billPriceSetting: 1,
       billPayorInfo: 1,
       billAmount: Math.round((renewalAmount + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/payment/success?transactionId=${transaction.id}`,
+      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
       billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
       billExternalReferenceNo: transaction.id,
       billTo: user.genericId,
@@ -759,14 +862,15 @@ exports.initiatePremiumRenewal = async (req, res) => {
       billSplitPayment: 0,
       billPaymentChannel: '2',
       billContentEmail: 'Thank you for renewing your LiveID Premium handle.',
-    };
+    });
 
     const toyyibResponse = await axios.post(
       'https://toyyibpay.com/index.php/api/createBill',
-      new URLSearchParams(billData)
+      billData.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    const billCode = toyyibResponse.data[0]?.BillCode;
+    const billCode = toyyibResponse.data?.[0]?.BillCode;
     if (!billCode) {
       await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
       return res.status(500).json({ error: 'Failed to create renewal bill' });

@@ -34,7 +34,6 @@ exports.verifyLiveness = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No photo uploaded' });
 
-    // Upload selfie to Cloudinary
     const streamUpload = () =>
       new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -54,17 +53,12 @@ exports.verifyLiveness = async (req, res) => {
     const uploadResult = await streamUpload();
     const photoUrl = uploadResult.secure_url;
 
-    // Generate unique faceId — SHA-256 hash, not biometric
     const faceId = crypto
       .createHash('sha256')
       .update(`${Date.now()}${Math.random()}${photoUrl}${process.env.HANDLE_HASH_SALT}`)
       .digest('hex');
 
-    res.json({
-      result: 'real',
-      faceId,
-      photoUrl,
-    });
+    res.json({ result: 'real', faceId, photoUrl });
   } catch (err) {
     console.error('verifyLiveness error:', err.message);
     res.status(500).json({ error: err.message });
@@ -83,72 +77,89 @@ exports.startVerification = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Check handle availability
-    const existingHandle = await prisma.handle.findUnique({ where: { name: handleName } });
+    const cleanName = handleName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (!cleanName) return res.status(400).json({ error: 'Invalid handle name' });
+
+    // Block vault handles from the standard registration path
+    const vaultHandle = await prisma.vaultHandle.findUnique({ where: { name: cleanName } });
+    if (vaultHandle) {
+      return res.status(409).json({ error: 'This handle is only available through The Vault' });
+    }
+
+    const existingHandle = await prisma.handle.findUnique({ where: { name: cleanName } });
     if (existingHandle && existingHandle.status === 'ACTIVE') {
       return res.status(409).json({ error: 'Handle already taken' });
     }
 
-    // Check email not already registered
     const existingUser = await prisma.user.findUnique({ where: { email } });
     if (existingUser) return res.status(409).json({ error: 'Email already registered' });
 
-    // Check phone not already registered
     const existingPhone = await prisma.user.findUnique({ where: { phone } });
     if (existingPhone) return res.status(409).json({ error: 'Phone number already registered' });
 
-    // Check faceId not already registered
     const existingFace = await prisma.user.findUnique({ where: { faceId } });
     if (existingFace) return res.status(409).json({ error: 'Identity already registered' });
 
+    // Resolve tier/price from the same source of truth the rest of the app uses
+    const { calculatePricing } = require('./handleController');
+    const pricingResult = await calculatePricing(cleanName);
+    if (!pricingResult) return res.status(400).json({ error: 'Invalid handle format' });
+
     const pricing = await getPricing();
     const registrationFee = pricing.REGISTRATION_FEE || 6.90;
-    const handlePrice = pricing.STANDARD_HANDLE_BASE || 10.00;
     const gatewayFee = pricing.GATEWAY_FEE || 1.00;
+    const handlePrice = pricingResult.price;
+    const renewalAmount = pricing.ANNUAL_RENEWAL || 28.00;
     const totalAmount = registrationFee + handlePrice + gatewayFee;
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Validate referral code if provided
     let referral = null;
     if (referralCode) {
       referral = await prisma.referral.findFirst({
-        where: { code: referralCode, isActive: true, isActiveReferral: true },
+        where: { code: referralCode.toLowerCase(), isActive: true, isActiveReferral: true },
       });
     }
 
-    // Create PENDING transaction
+    const registrationExpiry = new Date();
+    registrationExpiry.setFullYear(registrationExpiry.getFullYear() + 1);
+
     const transaction = await prisma.transaction.create({
       data: {
         type: 'REGISTRATION',
         status: 'PENDING',
         amountRM: totalAmount,
-        referralCode: referral ? referralCode : null,
+        referralCode: referral ? referral.code : null,
         pendingData: {
           phone,
           email,
-          password: passwordHash,
-          handleName,
+          passwordHash,
           faceId,
           photoUrl: photoUrl || null,
-          referralCode: referral ? referralCode : null,
+          handleName: cleanName,
+          baseWord: pricingResult.baseWord,
+          numberSuffix: pricingResult.numberSuffix,
+          tier: pricingResult.tier,
+          handlePrice,
+          registrationExpiry: registrationExpiry.toISOString(),
+          renewalAmount,
+          referralCode: referral ? referral.code : null,
         },
       },
     });
 
-    // Create ToyyibPay bill
     const billData = new URLSearchParams({
       userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
       categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_REGISTRATION,
       billName: 'LiveID Registration',
-      billDescription: `LiveID handle registration: ${handleName}`,
+      billDescription: `LiveID handle registration: ${cleanName}`,
       billPriceSetting: 1,
       billPayorInfo: 1,
       billAmount: Math.round(totalAmount * 100),
       billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
       billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
       billExternalReferenceNo: transaction.id,
-      billTo: `LiveID User`,
+      billTo: 'LiveID User',
       billEmail: email,
       billPhone: phone,
       billSplitPayment: 0,
@@ -164,11 +175,18 @@ exports.startVerification = async (req, res) => {
     );
 
     const billCode = toyyibRes.data?.[0]?.BillCode;
-    if (!billCode) throw new Error('Failed to create payment bill');
+    if (!billCode) {
+      await prisma.transaction.update({
+        where: { id: transaction.id },
+        data: { status: 'FAILED' },
+      });
+      return res.status(500).json({ error: 'Failed to create payment bill' });
+    }
 
+    // Schema field is toyyibRef — this is what handleCallback looks up
     await prisma.transaction.update({
       where: { id: transaction.id },
-      data: { billCode },
+      data: { toyyibRef: billCode },
     });
 
     res.json({
@@ -204,7 +222,8 @@ exports.checkTransactionStatus = async (req, res) => {
 
 exports.loginUser = async (req, res) => {
   try {
-    const { phone, password } = req.body || req.query;
+    const source = (req.body && Object.keys(req.body).length) ? req.body : req.query;
+    const { phone, password } = source || {};
     if (!phone || !password) return res.status(400).json({ error: 'Phone and password required' });
 
     const user = await prisma.user.findUnique({
@@ -273,7 +292,7 @@ exports.forgotPassword = async (req, res) => {
     if (!user) return res.status(404).json({ error: 'No account found with this email' });
 
     const token = crypto.randomBytes(32).toString('hex');
-    const expiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    const expiry = new Date(Date.now() + 60 * 60 * 1000);
 
     await prisma.user.update({
       where: { id: user.id },
@@ -311,7 +330,10 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   try {
-    const { token, password } = req.body;
+    // Accept both `password` and `newPassword` — FE sends newPassword
+    const { token } = req.body;
+    const password = req.body.password || req.body.newPassword;
+
     if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
 
     const user = await prisma.user.findFirst({
@@ -382,7 +404,6 @@ exports.deleteAccount = async (req, res) => {
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Delete selfie from Cloudinary
     if (user.profile?.photoUrl) {
       try {
         const publicId = user.profile.photoUrl.split('/').slice(-2).join('/').split('.')[0];
@@ -392,30 +413,22 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    // Retire the handle
     if (user.activeHandle) {
       await prisma.handle.update({
         where: { id: user.activeHandle.id },
-        data: {
-          status: 'RETIRED',
-          ownerId: null,
-          retiredAt: new Date(),
-        },
+        data: { status: 'RETIRED', ownerId: null, retiredAt: new Date() },
       });
     }
 
-    // Delete user profile
+    // ReferralEarning has a required FK to Transaction — clear those first
+    await prisma.referralEarning.deleteMany({ where: { userId } });
+
     if (user.profile) {
       await prisma.userProfile.delete({ where: { userId } });
     }
 
-    // Delete trust score
     await prisma.trustScore.deleteMany({ where: { userId } });
-
-    // Delete transactions
     await prisma.transaction.deleteMany({ where: { userId } });
-
-    // Delete user
     await prisma.user.delete({ where: { id: userId } });
 
     res.json({ message: 'Account deleted successfully' });
