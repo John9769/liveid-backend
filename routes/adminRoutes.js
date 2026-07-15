@@ -6,7 +6,7 @@ const adminController = require('../controllers/adminController');
 // Public — login only
 router.post('/login', adminController.login);
 
-// All routes below require admin token
+// All routes below require an admin token
 router.use(adminAuth);
 
 // Overview

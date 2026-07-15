@@ -7,8 +7,8 @@ const adminAuth = require('../middleware/adminAuth');
 router.post('/', waitlistController.joinWaitlist);
 
 // Admin
-router.get('/', adminAuth, waitlistController.getWaitlist);
 router.get('/handle/:handleName', adminAuth, waitlistController.getWaitlistByHandle);
+router.get('/', adminAuth, waitlistController.getWaitlist);
 router.patch('/:id', adminAuth, waitlistController.updateWaitlistStatus);
 
 module.exports = router;

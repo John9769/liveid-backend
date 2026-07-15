@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { Resend } = require('resend');
 const cloudinary = require('cloudinary').v2;
@@ -16,7 +17,7 @@ cloudinary.config({
 });
 
 // ============================================================
-// PRICING HELPER
+// HELPERS
 // ============================================================
 
 async function getPricing() {
@@ -24,6 +25,28 @@ async function getPricing() {
   const map = {};
   for (const c of configs) map[c.key] = c.value;
   return map;
+}
+
+function issueUserToken(user) {
+  if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is not set');
+  return jwt.sign(
+    { userId: user.id, genericId: user.genericId },
+    process.env.JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    genericId: user.genericId,
+    email: user.email,
+    phone: user.phone,
+    tier: user.tier,
+    isVerified: user.isVerified,
+    registrationExpiry: user.registrationExpiry,
+    activeHandle: user.activeHandle?.name || null,
+  };
 }
 
 // ============================================================
@@ -77,10 +100,13 @@ exports.startVerification = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
     const cleanName = handleName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (!cleanName) return res.status(400).json({ error: 'Invalid handle name' });
 
-    // Block vault handles from the standard registration path
     const vaultHandle = await prisma.vaultHandle.findUnique({ where: { name: cleanName } });
     if (vaultHandle) {
       return res.status(409).json({ error: 'This handle is only available through The Vault' });
@@ -100,7 +126,6 @@ exports.startVerification = async (req, res) => {
     const existingFace = await prisma.user.findUnique({ where: { faceId } });
     if (existingFace) return res.status(409).json({ error: 'Identity already registered' });
 
-    // Resolve tier/price from the same source of truth the rest of the app uses
     const { calculatePricing } = require('./handleController');
     const pricingResult = await calculatePricing(cleanName);
     if (!pricingResult) return res.status(400).json({ error: 'Invalid handle format' });
@@ -183,7 +208,6 @@ exports.startVerification = async (req, res) => {
       return res.status(500).json({ error: 'Failed to create payment bill' });
     }
 
-    // Schema field is toyyibRef — this is what handleCallback looks up
     await prisma.transaction.update({
       where: { id: transaction.id },
       data: { toyyibRef: billCode },
@@ -217,6 +241,48 @@ exports.checkTransactionStatus = async (req, res) => {
 };
 
 // ============================================================
+// CLAIM SESSION — exchange a SUCCESS transaction for a token
+// Called by the payment success page. Lets a brand new user
+// log in without retyping their password.
+// ============================================================
+
+exports.claimSession = async (req, res) => {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) return res.status(400).json({ error: 'transactionId is required' });
+
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+    });
+    if (!transaction) return res.status(404).json({ error: 'Transaction not found' });
+    if (transaction.status !== 'SUCCESS') {
+      return res.status(409).json({ error: 'Payment not yet confirmed' });
+    }
+    if (!transaction.userId) {
+      return res.status(409).json({ error: 'Account not ready yet' });
+    }
+
+    // One-time: only claimable within 30 minutes of the transaction
+    const age = Date.now() - new Date(transaction.createdAt).getTime();
+    if (age > 30 * 60 * 1000) {
+      return res.status(410).json({ error: 'Session claim expired. Please log in.' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: transaction.userId },
+      include: { activeHandle: true },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const token = issueUserToken(user);
+    res.json({ token, user: publicUser(user) });
+  } catch (err) {
+    console.error('claimSession error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ============================================================
 // LOGIN
 // ============================================================
 
@@ -236,17 +302,11 @@ exports.loginUser = async (req, res) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    res.json({
-      id: user.id,
-      genericId: user.genericId,
-      email: user.email,
-      phone: user.phone,
-      tier: user.tier,
-      isVerified: user.isVerified,
-      registrationExpiry: user.registrationExpiry,
-      activeHandle: user.activeHandle?.name || null,
-    });
+    const token = issueUserToken(user);
+
+    res.json({ token, user: publicUser(user) });
   } catch (err) {
+    console.error('loginUser error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -264,16 +324,7 @@ exports.getUserProfile = async (req, res) => {
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    res.json({
-      id: user.id,
-      genericId: user.genericId,
-      email: user.email,
-      phone: user.phone,
-      tier: user.tier,
-      isVerified: user.isVerified,
-      registrationExpiry: user.registrationExpiry,
-      activeHandle: user.activeHandle?.name || null,
-    });
+    res.json(publicUser(user));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -289,7 +340,9 @@ exports.forgotPassword = async (req, res) => {
     if (!email) return res.status(400).json({ error: 'Email required' });
 
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(404).json({ error: 'No account found with this email' });
+
+    // Never reveal whether an email is registered
+    if (!user) return res.json({ message: 'If that email is registered, a reset link has been sent.' });
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiry = new Date(Date.now() + 60 * 60 * 1000);
@@ -318,8 +371,9 @@ exports.forgotPassword = async (req, res) => {
       `,
     });
 
-    res.json({ message: 'Reset email sent' });
+    res.json({ message: 'If that email is registered, a reset link has been sent.' });
   } catch (err) {
+    console.error('forgotPassword error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -330,11 +384,11 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   try {
-    // Accept both `password` and `newPassword` — FE sends newPassword
     const { token } = req.body;
     const password = req.body.password || req.body.newPassword;
 
     if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
 
     const user = await prisma.user.findFirst({
       where: {
@@ -354,6 +408,7 @@ exports.resetPassword = async (req, res) => {
 
     res.json({ message: 'Password reset successful' });
   } catch (err) {
+    console.error('resetPassword error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -364,9 +419,16 @@ exports.resetPassword = async (req, res) => {
 
 exports.changePassword = async (req, res) => {
   try {
-    const { userId, currentPassword, newPassword } = req.body;
-    if (!userId || !currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'All fields required' });
+    const { currentPassword, newPassword } = req.body;
+
+    // userId comes from the token, never from the body
+    const userId = req.user.userId;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new password required' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -380,6 +442,7 @@ exports.changePassword = async (req, res) => {
 
     res.json({ message: 'Password changed successfully' });
   } catch (err) {
+    console.error('changePassword error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -391,10 +454,13 @@ exports.changePassword = async (req, res) => {
 exports.deleteAccount = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { confirmation } = req.body;
+    const { confirmation, password } = req.body;
 
     if (confirmation !== 'DELETE') {
       return res.status(400).json({ error: 'Invalid confirmation' });
+    }
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required to delete your account' });
     }
 
     const user = await prisma.user.findUnique({
@@ -403,6 +469,9 @@ exports.deleteAccount = async (req, res) => {
     });
 
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Password incorrect' });
 
     if (user.profile?.photoUrl) {
       try {
@@ -413,23 +482,29 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    if (user.activeHandle) {
-      await prisma.handle.update({
-        where: { id: user.activeHandle.id },
-        data: { status: 'RETIRED', ownerId: null, retiredAt: new Date() },
+    await prisma.$transaction(async (tx) => {
+      if (user.activeHandle) {
+        await tx.handle.update({
+          where: { id: user.activeHandle.id },
+          data: { status: 'RETIRED', ownerId: null, retiredAt: new Date() },
+        });
+      }
+
+      // ReferralEarning has a required FK to Transaction — clear these first
+      await tx.referralEarning.deleteMany({ where: { userId } });
+      await tx.referralEarning.deleteMany({
+        where: { transaction: { userId } },
       });
-    }
 
-    // ReferralEarning has a required FK to Transaction — clear those first
-    await prisma.referralEarning.deleteMany({ where: { userId } });
+      if (user.profile) {
+        await tx.userProfile.delete({ where: { userId } });
+      }
 
-    if (user.profile) {
-      await prisma.userProfile.delete({ where: { userId } });
-    }
-
-    await prisma.trustScore.deleteMany({ where: { userId } });
-    await prisma.transaction.deleteMany({ where: { userId } });
-    await prisma.user.delete({ where: { id: userId } });
+      await tx.trustScore.deleteMany({ where: { userId } });
+      await tx.handleRequest.deleteMany({ where: { userId } });
+      await tx.transaction.deleteMany({ where: { userId } });
+      await tx.user.delete({ where: { id: userId } });
+    });
 
     res.json({ message: 'Account deleted successfully' });
   } catch (err) {
