@@ -6,41 +6,58 @@ const prisma = new PrismaClient();
 // ============================================================
 
 const pricing = [
+  // ---- User pricing ----
   { key: 'REGISTRATION_FEE', value: 6.90, description: 'First year registration fee' },
   { key: 'STANDARD_HANDLE_BASE', value: 10.00, description: 'Standard handle base price' },
   { key: 'ANNUAL_RENEWAL', value: 28.00, description: 'Annual renewal fee' },
-  { key: 'REFERRAL_STANDARD_REG', value: 5.00, description: 'Referral commission on standard registration' },
-  { key: 'REFERRAL_STANDARD_RENEWAL', value: 3.00, description: 'Referral commission on standard renewal' },
-  { key: 'REFERRAL_VAULT_PERCENT', value: 10.00, description: 'Referral commission percentage on vault purchases' },
   { key: 'GATEWAY_FEE', value: 1.00, description: 'ToyyibPay gateway fee absorbed by user' },
   { key: 'VAULT_RENEWAL_PERCENT', value: 10.00, description: 'Vault handle annual renewal as percentage of purchase price' },
-  { key: 'SUPER_REFERRAL_STANDARD_REG', value: 2.00, description: 'Super referral override on standard registration' },
-  { key: 'SUPER_REFERRAL_STANDARD_RENEWAL', value: 1.00, description: 'Super referral override on standard renewal' },
-  { key: 'SUPER_REFERRAL_VAULT_PERCENT', value: 3.00, description: 'Super referral override percentage on vault purchases' },
+
+  // ---- Referral — direct commission ----
+  { key: 'REFERRAL_STANDARD_REG', value: 5.00, description: 'Referral commission on standard registration' },
+  { key: 'REFERRAL_STANDARD_RENEWAL', value: 3.00, description: 'Referral commission on standard renewal' },
+  { key: 'REFERRAL_VAULT_PERCENT', value: 10.00, description: 'Referral commission percentage on vault and premium purchases' },
+
+  // ---- Super Referral — override commission. One layer only. ----
+  { key: 'SUPER_REFERRAL_STANDARD_REG', value: 2.00, description: 'Super Referral override on standard registration' },
+  { key: 'SUPER_REFERRAL_STANDARD_RENEWAL', value: 1.00, description: 'Super Referral override on standard renewal' },
+  { key: 'SUPER_REFERRAL_VAULT_PERCENT', value: 3.00, description: 'Super Referral override percentage on vault and premium purchases' },
 ];
 
 // ============================================================
 // CURATED WORDS
+//
+// Variant pricing is derived: basePrice x number multiplier.
+// e.g. boss88 = 688 x 1.2 = RM826
+// There is no separate variant price column — the multiplier is
+// the single source of truth for every variant.
 // ============================================================
 
 const curatedWords = [
   // GOLDEN tier — these are also Vault words
-  { word: 'boss', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 4888, vaultRenewalFee: 488, vaultVariantPrice: 733 },
-  { word: 'king', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 6888, vaultRenewalFee: 688, vaultVariantPrice: 1033 },
-  { word: 'queen', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 6888, vaultRenewalFee: 688, vaultVariantPrice: 1033 },
+  { word: 'boss', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 4888, vaultRenewalFee: 488 },
+  { word: 'king', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 6888, vaultRenewalFee: 688 },
+  { word: 'queen', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 6888, vaultRenewalFee: 688 },
   { word: 'vip', tier: 'GOLDEN', basePrice: 688, isVault: false },
+  { word: 'dato', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 4888, vaultRenewalFee: 488 },
+  { word: 'datuk', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 4888, vaultRenewalFee: 488 },
+  { word: 'ceo', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388 },
 
   // SILVER tier — some are Vault words
-  { word: 'prince', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388, vaultVariantPrice: 583 },
-  { word: 'princess', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388, vaultVariantPrice: 583 },
+  { word: 'prince', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388 },
+  { word: 'princess', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388 },
   { word: 'chief', tier: 'SILVER', basePrice: 388, isVault: false },
-  { word: 'alpha', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
-  { word: 'legend', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388, vaultVariantPrice: 583 },
-  { word: 'master', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
+  { word: 'alpha', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
+  { word: 'legend', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388 },
+  { word: 'master', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
   { word: 'don', tier: 'SILVER', basePrice: 388, isVault: false },
   { word: 'mogul', tier: 'SILVER', basePrice: 388, isVault: false },
-  { word: 'tycoon', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388, vaultVariantPrice: 583 },
-  { word: 'elite', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
+  { word: 'tycoon', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388 },
+  { word: 'elite', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
+  { word: 'warrior', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
+  { word: 'champion', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
+  { word: 'hero', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
+  { word: 'omega', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288 },
 
   // SPECIAL tier
   { word: 'rich', tier: 'SPECIAL', basePrice: 188, isVault: false },
@@ -82,19 +99,10 @@ const curatedWords = [
   { word: 'influencer', tier: 'SPECIAL', basePrice: 188, isVault: false },
   { word: 'creator', tier: 'SPECIAL', basePrice: 188, isVault: false },
   { word: 'founder', tier: 'SPECIAL', basePrice: 188, isVault: false },
-
-  // Additional Vault-only words not in curated list
-  { word: 'dato', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 4888, vaultRenewalFee: 488, vaultVariantPrice: 733 },
-  { word: 'datuk', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 4888, vaultRenewalFee: 488, vaultVariantPrice: 733 },
-  { word: 'ceo', tier: 'GOLDEN', basePrice: 688, isVault: true, vaultPrice: 3888, vaultRenewalFee: 388, vaultVariantPrice: 583 },
-  { word: 'warrior', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
-  { word: 'champion', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
-  { word: 'hero', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
-  { word: 'omega', tier: 'SILVER', basePrice: 388, isVault: true, vaultPrice: 2888, vaultRenewalFee: 288, vaultVariantPrice: 433 },
-  { word: 'cyber', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188, vaultVariantPrice: 288 },
-  { word: 'phantom', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188, vaultVariantPrice: 288 },
-  { word: 'viper', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188, vaultVariantPrice: 288 },
-  { word: 'titan', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188, vaultVariantPrice: 288 },
+  { word: 'cyber', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188 },
+  { word: 'phantom', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188 },
+  { word: 'viper', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188 },
+  { word: 'titan', tier: 'SPECIAL', basePrice: 188, isVault: true, vaultPrice: 1888, vaultRenewalFee: 188 },
 ];
 
 // ============================================================
@@ -148,18 +156,18 @@ async function main() {
         tier: item.tier,
         basePrice: item.basePrice,
         isVault: item.isVault,
-        vaultPrice: item.vaultPrice || null,
-        vaultRenewalFee: item.vaultRenewalFee || null,
-        vaultVariantPrice: item.vaultVariantPrice || null,
+        vaultPrice: item.vaultPrice ?? null,
+        vaultRenewalFee: item.vaultRenewalFee ?? null,
+        vaultVariantPrice: null,
       },
       create: {
         word: item.word,
         tier: item.tier,
         basePrice: item.basePrice,
         isVault: item.isVault,
-        vaultPrice: item.vaultPrice || null,
-        vaultRenewalFee: item.vaultRenewalFee || null,
-        vaultVariantPrice: item.vaultVariantPrice || null,
+        vaultPrice: item.vaultPrice ?? null,
+        vaultRenewalFee: item.vaultRenewalFee ?? null,
+        vaultVariantPrice: null,
       },
     });
     console.log(`✓ ${item.word} (${item.tier})${item.isVault ? ' [VAULT]' : ''}`);
@@ -171,6 +179,7 @@ async function main() {
       where: { name: item.name },
       update: {
         tier: item.tier,
+        baseWord: item.baseWord,
         buyNowPrice: item.buyNowPrice,
         reservePrice: item.reservePrice,
         renewalFee: item.renewalFee,
@@ -180,9 +189,21 @@ async function main() {
     console.log(`✓ liveid.asia/${item.name} — RM${item.buyNowPrice} (reserve: RM${item.reservePrice})`);
   }
 
-  console.log('\n✅ All seeding complete.');
+  // Every vault handle must have a matching curated word, or
+  // calculatePricing falls back to STANDARD_HANDLE_BASE for its variants.
+  const vaultNames = vaultHandles.map((v) => v.name);
+  const curatedNames = curatedWords.map((c) => c.word);
+  const orphans = vaultNames.filter((n) => !curatedNames.includes(n));
+  if (orphans.length) {
+    console.warn(`\n⚠ Vault handles with no curated word: ${orphans.join(', ')}`);
+  }
+
+  console.log(`\n✅ Seeding complete — ${pricing.length} pricing keys, ${curatedWords.length} words, ${vaultHandles.length} vault handles.`);
 }
 
 main()
-  .catch((err) => console.error(err))
+  .catch((err) => {
+    console.error('Seed failed:', err.message);
+    process.exit(1);
+  })
   .finally(async () => await prisma.$disconnect());

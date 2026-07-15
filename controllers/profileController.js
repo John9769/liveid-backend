@@ -23,8 +23,24 @@ exports.getProfile = async (req, res) => {
 
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    res.json({ profile });
+    // Never leak the password hash through the nested user object
+    const { user, ...rest } = profile;
+    const safeUser = user
+      ? {
+          id: user.id,
+          genericId: user.genericId,
+          email: user.email,
+          phone: user.phone,
+          tier: user.tier,
+          isVerified: user.isVerified,
+          registrationExpiry: user.registrationExpiry,
+          activeHandle: user.activeHandle || null,
+        }
+      : null;
+
+    res.json({ profile: { ...rest, user: safeUser } });
   } catch (err) {
+    console.error('getProfile error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -41,44 +57,57 @@ exports.upsertProfile = async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // Explicit whitelist — photoUrl is never accepted from the client.
+    // The selfie is set once at registration and cannot be replaced.
+    const data = {
+      displayName: displayName ?? null,
+      bio: bio ?? null,
+      city: city ?? null,
+      profession: profession ?? null,
+      instagram: instagram ?? null,
+      tiktok: tiktok ?? null,
+      facebook: facebook ?? null,
+      twitter: twitter ?? null,
+      youtube: youtube ?? null,
+      whatsapp: whatsapp ?? null,
+      website: website ?? null,
+    };
+
     const profile = await prisma.userProfile.upsert({
       where: { userId },
+      update: data,
+      create: { userId, ...data },
+    });
+
+    // Trust score — recalculated, never blindly incremented
+    const fields = [
+      displayName, bio, city, profession,
+      instagram, tiktok, facebook, twitter,
+      youtube, whatsapp, website,
+    ];
+    const filledFields = fields.filter((f) => f && String(f).trim() !== '').length;
+    const profileComplete = filledFields >= 3;
+
+    const baseScore = 50;
+    const score = baseScore + (profileComplete ? 10 : 0);
+
+    await prisma.trustScore.upsert({
+      where: { userId },
       update: {
-        displayName, bio, city, profession,
-        instagram, tiktok, facebook, twitter,
-        youtube, whatsapp, website,
+        score,
+        factors: { verified: true, renewal: false, profileComplete },
+        calculatedAt: new Date(),
       },
       create: {
         userId,
-        displayName, bio, city, profession,
-        instagram, tiktok, facebook, twitter,
-        youtube, whatsapp, website,
+        score,
+        factors: { verified: true, renewal: false, profileComplete },
       },
     });
 
-    // Update trust score — profile complete check
-    const fields = [displayName, bio, city, profession, instagram, tiktok, facebook, twitter, youtube, whatsapp, website];
-    const filledFields = fields.filter(f => f && f.trim() !== '').length;
-    const profileComplete = filledFields >= 3;
-
-    if (profileComplete) {
-      await prisma.trustScore.upsert({
-        where: { userId },
-        update: {
-          score: { increment: 10 },
-          factors: { verified: true, renewal: false, profileComplete: true },
-          calculatedAt: new Date(),
-        },
-        create: {
-          userId,
-          score: 60,
-          factors: { verified: true, renewal: false, profileComplete: true },
-        },
-      });
-    }
-
     res.json({ message: 'Profile updated', profile });
   } catch (err) {
+    console.error('upsertProfile error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -91,7 +120,6 @@ exports.uploadPhoto = async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Upload to Cloudinary — square crop, face gravity, auto quality
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
@@ -111,7 +139,6 @@ exports.uploadPhoto = async (req, res) => {
       stream.end(req.file.buffer);
     });
 
-    // Update profile photoUrl
     await prisma.userProfile.upsert({
       where: { userId },
       update: { photoUrl: result.secure_url },
@@ -125,28 +152,33 @@ exports.uploadPhoto = async (req, res) => {
   }
 };
 
+// ============================================================
+// PUBLIC VERIFICATION PAGE — the product
+// Flat shape. Everything the verify page needs, in one call.
+// ============================================================
+
 exports.getPublicProfile = async (req, res) => {
   try {
     const { handleName } = req.params;
+    const cleanName = handleName.toLowerCase();
 
-    // Log this visit — fire and forget, never block the response
+    // Log the visit — fire and forget, never block or break verification
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || null;
     prisma.verifyLog.create({
       data: {
-        handleName: handleName.toLowerCase(),
+        handleName: cleanName,
         ip,
         userAgent: req.headers['user-agent'] || null,
         referer: req.headers['referer'] || null,
       },
-    }).catch(() => {}); // silent fail — never break verify for logging
+    }).catch(() => {});
 
     const handle = await prisma.handle.findUnique({
-      where: { name: handleName.toLowerCase() },
+      where: { name: cleanName },
       include: {
         owner: {
           include: {
             profile: true,
-            activeHandle: true,
             trustScore: true,
           },
         },
@@ -154,45 +186,59 @@ exports.getPublicProfile = async (req, res) => {
     });
 
     if (!handle || handle.status !== 'ACTIVE' || !handle.owner) {
-      return res.status(404).json({ verified: false, message: 'This handle is no longer active or verified' });
+      return res.status(404).json({
+        verified: false,
+        message: 'This handle is no longer active or verified',
+      });
     }
 
-    // Check if registration expired
     const user = handle.owner;
+
     if (user.registrationExpiry && new Date() > new Date(user.registrationExpiry)) {
       return res.json({
         verified: false,
         expired: true,
+        handle: handle.name,
         message: 'This handle has expired. The owner has not renewed their LiveID.',
       });
     }
 
-    // Check if handle owner is an active referral
+    // Is the owner an active referral? Drives the CTA on their page.
     const referral = await prisma.referral.findFirst({
       where: { email: user.email, isActiveReferral: true, isActive: true },
+      select: { code: true },
     });
+
+    const p = user.profile;
 
     res.json({
       verified: true,
       handle: handle.name,
       tier: user.tier,
       genericId: user.genericId,
+      verifiedAt: user.verifiedAt,
+      registrationExpiry: user.registrationExpiry,
+      handleHash: handle.handleHash || null,
       trustScore: user.trustScore?.score || 0,
-      displayName: user.profile?.displayName || null,
-      bio: user.profile?.bio || null,
-      photoUrl: user.profile?.photoUrl || null,
-      city: user.profile?.city || null,
-      profession: user.profile?.profession || null,
-      instagram: user.profile?.instagram || null,
-      tiktok: user.profile?.tiktok || null,
-      facebook: user.profile?.facebook || null,
-      twitter: user.profile?.twitter || null,
-      youtube: user.profile?.youtube || null,
-      website: user.profile?.website || null,
+
+      displayName: p?.displayName || null,
+      bio: p?.bio || null,
+      photoUrl: p?.photoUrl || null,
+      city: p?.city || null,
+      profession: p?.profession || null,
+      instagram: p?.instagram || null,
+      tiktok: p?.tiktok || null,
+      facebook: p?.facebook || null,
+      twitter: p?.twitter || null,
+      youtube: p?.youtube || null,
+      whatsapp: p?.whatsapp || null,
+      website: p?.website || null,
+
       isReferral: !!referral,
       referralCode: referral?.code || null,
     });
   } catch (err) {
+    console.error('getPublicProfile error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
