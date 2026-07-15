@@ -357,7 +357,10 @@ exports.handleCallback = async (req, res) => {
     }
 
     await prisma.userProfile.create({
-      data: { userId: newUser.id },
+      data: {
+        userId: newUser.id,
+        photoUrl: data.photoUrl || null,
+      },
     });
 
     await prisma.trustScore.create({
