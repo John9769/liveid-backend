@@ -1,7 +1,9 @@
 const { PrismaClient } = require('@prisma/client');
 const axios = require('axios');
 const crypto = require('crypto');
+const { Resend } = require('resend');
 const prisma = new PrismaClient();
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 function generateHandleHash(userId, handleName, faceId, createdAt) {
   const salt = process.env.HANDLE_HASH_SALT || 'liveid_default_salt';
@@ -472,6 +474,96 @@ exports.handleCallback = async (req, res) => {
     });
 
     await fireReferralCommission(transaction, result.id);
+
+    // Welcome email — the only channel we can rely on. ToyyibPay's
+    // return URL is unreliable, so the user may never see our success
+    // page. Everything they need to get set up goes here.
+    try {
+      await resend.emails.send({
+        from: 'LiveID <hello@awas.asia>',
+        to: data.email,
+        subject: `You're verified — liveid.asia/${data.handleName}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 520px; margin: 0 auto; color: #0f172a;">
+            <p style="font-size: 0.72rem; letter-spacing: 0.14em; color: #0f766e; text-transform: uppercase; margin-bottom: 8px;">
+              LiveID Verified
+            </p>
+            <h1 style="font-size: 1.5rem; margin: 0 0 8px;">You're verified.</h1>
+            <p style="font-size: 1.2rem; font-weight: 700; color: #3b82f6; margin: 0 0 24px; font-family: monospace;">
+              liveid.asia/${data.handleName}
+            </p>
+
+            <p style="font-size: 0.9rem; line-height: 1.7;">
+              Your LiveID is live. Anyone can now check that you are a real, verified human
+              before they deal with you.
+            </p>
+
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 20px; margin: 24px 0;">
+              <p style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 12px;">
+                Step 1 — Put your handle where people see it
+              </p>
+              <p style="font-size: 0.85rem; line-height: 1.8; margin: 0;">
+                <strong>Instagram</strong> — Edit Profile → Links → add
+                <span style="font-family: monospace;">https://liveid.asia/${data.handleName}</span><br>
+                Bio text is not clickable on Instagram, so it must go in the Links field.<br><br>
+
+                <strong>Facebook</strong> — paste
+                <span style="font-family: monospace;">liveid.asia/${data.handleName}</span> in your bio.
+                It works as a link.<br><br>
+
+                <strong>TikTok</strong> — paste
+                <span style="font-family: monospace;">liveid.asia/${data.handleName}</span> in your bio.
+                It will not be clickable, and that is fine — people type it in themselves,
+                which is safer.<br><br>
+
+                <strong>WhatsApp Business</strong> — Profile → Website → add
+                <span style="font-family: monospace;">https://liveid.asia/${data.handleName}</span>
+              </p>
+            </div>
+
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 20px; margin: 24px 0;">
+              <p style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 12px;">
+                Step 2 — Complete your profile
+              </p>
+              <p style="font-size: 0.85rem; line-height: 1.8; margin: 0;">
+                Log in and add your social media links. This is what makes your page useful —
+                anyone checking you can see your real accounts and know that any other account
+                claiming to be you is fake.<br><br>
+                You can also choose whether your verified photo is shown to everyone, or only
+                to logged-in LiveID members.
+              </p>
+            </div>
+
+            <a href="${process.env.FRONTEND_URL}/en/login"
+              style="display: inline-block; margin: 8px 0 24px; padding: 12px 24px; background: #3b82f6; color: white; text-decoration: none; border-radius: 8px; font-weight: 600;">
+              Log in to my dashboard
+            </a>
+
+            <p style="font-size: 0.85rem; line-height: 1.7; color: #64748b;">
+              Log in with your phone number and the password you set during registration.
+            </p>
+
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+
+            <p style="font-size: 0.8rem; line-height: 1.7; color: #64748b;">
+              Your LiveID is valid until
+              <strong>${new Date(data.registrationExpiry).toLocaleDateString('en-MY', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>.
+              We will remind you before it expires. Your handle is yours permanently and is never
+              given to anyone else — but if you do not renew, anyone checking your link will see
+              an Expired notice instead of your verification.
+            </p>
+
+            <p style="font-size: 0.8rem; color: #64748b; margin-top: 24px;">
+              Powered by LiveID — liveid.asia<br>
+              AWAS Premium Resources (202603141446)
+            </p>
+          </div>
+        `,
+      });
+    } catch (emailErr) {
+      // Never fail the callback over an email — the account is already live
+      console.error('Welcome email failed:', emailErr.message);
+    }
 
     res.status(200).send('OK');
   } catch (err) {
