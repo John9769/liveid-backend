@@ -386,6 +386,9 @@ exports.handleCallback = async (req, res) => {
       return res.status(500).json({ error: 'Corrupt transaction data' });
     }
 
+    console.log('REGISTRATION CALLBACK OK | billcode=%s | handle=%s | email=%s | txn=%s — creating account...',
+      billcode, data.handleName, data.email, transaction.id);
+
     const result = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {

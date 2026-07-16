@@ -213,6 +213,9 @@ exports.startVerification = async (req, res) => {
       data: { toyyibRef: billCode },
     });
 
+    console.log('REGISTRATION BILL CREATED | handle=%s | email=%s | phone=%s | billcode=%s | amount=RM%s | txn=%s',
+      cleanName, email, phone, billCode, totalAmount.toFixed(2), transaction.id);
+
     res.json({
       paymentUrl: `https://toyyibpay.com/${billCode}`,
       transactionId: transaction.id,
