@@ -488,12 +488,14 @@ model PricingConfig {
 model VerifyLog {
   id          String   @id @default(uuid())
   handleName  String
+  viewerId    String?
   ip          String?
   userAgent   String?
   referer     String?
   createdAt   DateTime @default(now())
 
   @@index([handleName])
+  @@index([viewerId])
   @@index([createdAt])
 }
 
