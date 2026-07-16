@@ -188,7 +188,7 @@ exports.startVerification = async (req, res) => {
       billEmail: email,
       billPhone: phone,
       billSplitPayment: 0,
-      billPaymentChannel: '2',
+      billPaymentChannel: 2,
       billContentEmail: 'Thank you for registering with LiveID.',
       billChargeToCustomer: 1,
     });
