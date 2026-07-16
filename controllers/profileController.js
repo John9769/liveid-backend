@@ -74,6 +74,7 @@ exports.upsertProfile = async (req, res) => {
       displayName, bio, city, profession,
       instagram, tiktok, facebook, twitter,
       youtube, whatsapp, website,
+      photoPublic,
     } = req.body;
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -93,6 +94,9 @@ exports.upsertProfile = async (req, res) => {
       youtube: youtube ?? null,
       whatsapp: whatsapp ?? null,
       website: website ?? null,
+      // The member decides whether their verified photo is shown to
+      // anonymous visitors. Private is the default.
+      photoPublic: photoPublic === true,
     };
 
     const profile = await prisma.userProfile.upsert({
@@ -254,9 +258,10 @@ exports.getPublicProfile = async (req, res) => {
       handleHash: handle.handleHash || null,
       trustScore: user.trustScore?.score || 0,
 
-      // The photo is the gated field. Everything else is public.
-      photoUrl: isMember ? (p?.photoUrl || null) : null,
-      photoLocked: !isMember && !!p?.photoUrl,
+      // The member chooses. Public photos show to everyone. Private
+      // photos show only to logged-in LiveID members.
+      photoUrl: (p?.photoPublic || isMember) ? (p?.photoUrl || null) : null,
+      photoLocked: !isMember && !p?.photoPublic && !!p?.photoUrl,
       viewerIsMember: isMember,
 
       displayName: p?.displayName || null,

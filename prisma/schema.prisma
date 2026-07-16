@@ -360,6 +360,7 @@ model UserProfile {
   displayName String?
   bio         String?
   photoUrl    String?
+  photoPublic Boolean  @default(false)
   city        String?
   profession  String?
 
