@@ -244,6 +244,13 @@ exports.searchHandle = async (req, res) => {
       },
     }).catch(() => {});
 
+    // Variants are only offered on a clean word. If the query already
+    // carries digits, that IS the user's choice — appending more
+    // produces a meaningless number with no multiplier.
+    if (pricing.numberSuffix) {
+      return res.json({ exact, variants: [], results: [exact] });
+    }
+
     // Variant suggestions
     const variantSuffixes = [
       '88',
