@@ -36,10 +36,12 @@ exports.createInvitation = async (req, res) => {
     const cleanHandle = handle.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (!cleanHandle) return res.status(400).json({ error: 'Invalid handle name' });
 
-    // Vault handles are not free — cannot be given away via invitation
-    const vaultHandle = await prisma.vaultHandle.findUnique({ where: { name: cleanHandle } });
-    if (vaultHandle) {
-      return res.status(409).json({ error: 'This handle belongs to The Vault and cannot be invited' });
+    // Title handles are not free — they require documentary proof
+    const inviteLetters = cleanHandle.replace(/[0-9]/g, '').replace(/_/g, '');
+    const blockedTitles = await prisma.blockedWord.findMany({ where: { category: 'TITLE' } });
+    const titleHit = blockedTitles.find((b) => inviteLetters.includes(b.word));
+    if (titleHit) {
+      return res.status(409).json({ error: `This handle contains the title "${titleHit.word}" and cannot be given as a joining bonus` });
     }
 
     const existingHandle = await prisma.handle.findUnique({ where: { name: cleanHandle } });
@@ -239,8 +241,7 @@ exports.acceptInvitation = async (req, res) => {
     const { calculatePricing } = require('./handleController');
     const pricingResult = await calculatePricing(invitation.handle);
 
-    const pricing = await prisma.pricingConfig.findUnique({ where: { key: 'ANNUAL_RENEWAL' } });
-    const renewalAmount = pricing?.value || 28.00;
+    const renewalAmount = pricingResult?.renewalAmount || 28.00;
 
     // All or nothing — a half-built referral account is worse than none
     const result = await prisma.$transaction(async (tx) => {

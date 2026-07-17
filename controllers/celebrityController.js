@@ -193,10 +193,12 @@ exports.createCelebrityHandle = async (req, res) => {
       return res.status(409).json({ error: 'This handle is already taken by a registered user' });
     }
 
-    // Cannot reserve a Vault name through this route
-    const vaultHandle = await prisma.vaultHandle.findUnique({ where: { name: cleanName } });
-    if (vaultHandle) {
-      return res.status(409).json({ error: 'This handle belongs to The Vault' });
+    // Cannot reserve a title name — titles require documentary proof
+    const letters = cleanName.replace(/[0-9]/g, '').replace(/_/g, '');
+    const blockedTitles = await prisma.blockedWord.findMany({ where: { category: 'TITLE' } });
+    const titleHit = blockedTitles.find((b) => letters.includes(b.word));
+    if (titleHit) {
+      return res.status(409).json({ error: `This handle contains the title "${titleHit.word}" and requires verification` });
     }
 
     // handleName is @unique on CelebrityHandle

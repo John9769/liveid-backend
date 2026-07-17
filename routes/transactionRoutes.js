@@ -15,10 +15,9 @@ router.post('/callback', parseCallbackBody, transactionController.handleCallback
 
 // Authenticated — userId comes from the body, checked against the token
 router.post('/renew', userAuth, userAuth.ownsResource, transactionController.initiateRenewal);
-router.post('/vault-purchase', userAuth, userAuth.ownsResource, transactionController.initiateVaultPurchase);
-router.post('/vault-renewal', userAuth, userAuth.ownsResource, transactionController.initiateVaultRenewal);
 router.post('/premium-purchase', userAuth, userAuth.ownsResource, transactionController.initiatePremiumPurchase);
 router.post('/premium-renewal', userAuth, userAuth.ownsResource, transactionController.initiatePremiumRenewal);
+router.post('/title-renewal', userAuth, userAuth.ownsResource, transactionController.initiateTitleRenewal);
 
 // Param route LAST so it never swallows the named routes above
 router.get('/:userId', userAuth, userAuth.ownsResource, transactionController.getUserTransactions);

@@ -9,6 +9,12 @@ router.post('/admin/curated-words', adminAuth, handleController.addCuratedWord);
 router.get('/admin/curated-words', adminAuth, handleController.listCuratedWords);
 router.delete('/admin/curated-words/:id', adminAuth, handleController.removeCuratedWord);
 
+router.post('/admin/blocked-words', adminAuth, handleController.addBlockedWord);
+router.get('/admin/blocked-words', adminAuth, handleController.listBlockedWords);
+router.delete('/admin/blocked-words/:id', adminAuth, handleController.removeBlockedWord);
+
+router.get('/admin/search-log', adminAuth, handleController.getSearchLog);
+
 // Public
 router.get('/search', handleController.searchHandle);
 router.get('/billboard', handleController.getBillboard);

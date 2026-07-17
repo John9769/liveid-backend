@@ -23,6 +23,18 @@ async function getPricing() {
   return map;
 }
 
+const RENEWAL_KEY_BY_TIER = {
+  STANDARD: 'ANNUAL_RENEWAL',
+  SPECIAL: 'RENEWAL_SPECIAL',
+  SILVER: 'RENEWAL_SILVER',
+  GOLDEN: 'RENEWAL_GOLDEN',
+};
+
+function getRenewalAmount(tier, pricing) {
+  const key = RENEWAL_KEY_BY_TIER[tier] || 'ANNUAL_RENEWAL';
+  return pricing[key] || pricing.ANNUAL_RENEWAL || 28;
+}
+
 async function fireReferralCommission(transaction, userId) {
   try {
     if (!transaction.referralCode) return;
@@ -49,18 +61,18 @@ async function fireReferralCommission(transaction, userId) {
     } else if (transaction.type === 'RENEWAL') {
       commission = pricing.REFERRAL_STANDARD_RENEWAL || 3.00;
       earningType = 'STANDARD_RENEWAL';
-    } else if (transaction.type === 'VAULT_PURCHASE') {
-      commission = transaction.amountRM * ((pricing.REFERRAL_VAULT_PERCENT || 10) / 100);
-      earningType = 'VAULT_PURCHASE';
-    } else if (transaction.type === 'VAULT_RENEWAL') {
-      commission = transaction.amountRM * ((pricing.REFERRAL_VAULT_PERCENT || 10) / 100);
-      earningType = 'VAULT_RENEWAL';
     } else if (transaction.type === 'PREMIUM_PURCHASE') {
-      commission = transaction.amountRM * ((pricing.REFERRAL_VAULT_PERCENT || 10) / 100);
+      commission = transaction.amountRM * ((pricing.REFERRAL_PREMIUM_PERCENT || 10) / 100);
       earningType = 'PREMIUM_PURCHASE';
     } else if (transaction.type === 'PREMIUM_RENEWAL') {
-      commission = transaction.amountRM * ((pricing.REFERRAL_VAULT_PERCENT || 10) / 100);
+      commission = transaction.amountRM * ((pricing.REFERRAL_PREMIUM_PERCENT || 10) / 100);
       earningType = 'PREMIUM_RENEWAL';
+    } else if (transaction.type === 'TITLE_PURCHASE') {
+      commission = transaction.amountRM * ((pricing.REFERRAL_TITLE_PERCENT || 10) / 100);
+      earningType = 'TITLE_PURCHASE';
+    } else if (transaction.type === 'TITLE_RENEWAL') {
+      commission = transaction.amountRM * ((pricing.REFERRAL_TITLE_PERCENT || 10) / 100);
+      earningType = 'TITLE_RENEWAL';
     }
 
     if (commission <= 0) return;
@@ -75,8 +87,10 @@ async function fireReferralCommission(transaction, userId) {
         overrideCommission = pricing.SUPER_REFERRAL_STANDARD_REG || 2.00;
       } else if (transaction.type === 'RENEWAL') {
         overrideCommission = pricing.SUPER_REFERRAL_STANDARD_RENEWAL || 1.00;
-      } else if (['VAULT_PURCHASE', 'VAULT_RENEWAL', 'PREMIUM_PURCHASE', 'PREMIUM_RENEWAL'].includes(transaction.type)) {
-        overrideCommission = transaction.amountRM * ((pricing.SUPER_REFERRAL_VAULT_PERCENT || 3) / 100);
+      } else if (['PREMIUM_PURCHASE', 'PREMIUM_RENEWAL'].includes(transaction.type)) {
+        overrideCommission = transaction.amountRM * ((pricing.SUPER_REFERRAL_PREMIUM_PERCENT || 3) / 100);
+      } else if (['TITLE_PURCHASE', 'TITLE_RENEWAL'].includes(transaction.type)) {
+        overrideCommission = transaction.amountRM * ((pricing.SUPER_REFERRAL_TITLE_PERCENT || 3) / 100);
       }
     }
 
@@ -173,110 +187,6 @@ exports.handleCallback = async (req, res) => {
     }
 
     // ========================================================
-    // VAULT_PURCHASE
-    // ========================================================
-    if (transaction.type === 'VAULT_PURCHASE') {
-      const data = transaction.pendingData;
-      if (!data?.vaultHandleId) {
-        console.error('VAULT_PURCHASE missing vaultHandleId:', transaction.id);
-        return res.status(500).json({ error: 'Corrupt transaction data' });
-      }
-
-      const vaultHandle = await prisma.vaultHandle.findUnique({ where: { id: data.vaultHandleId } });
-      if (!vaultHandle) return res.status(404).json({ error: 'Vault handle not found' });
-
-      const user = await prisma.user.findUnique({
-        where: { id: transaction.userId },
-        include: { activeHandle: true },
-      });
-      if (!user) return res.status(404).json({ error: 'User not found' });
-
-      // Retire the old handle — a user holds one active handle
-      if (user.activeHandle) {
-        await prisma.handle.update({
-          where: { id: user.activeHandle.id },
-          data: { status: 'RETIRED', retiredAt: new Date(), ownerId: null },
-        });
-      }
-
-      await prisma.vaultHandle.update({
-        where: { id: vaultHandle.id },
-        data: { status: 'SOLD', ownerId: user.id, soldAt: new Date() },
-      });
-
-      // Mirror into Handle so verification pages resolve the name
-      const handleHash = generateHandleHash(user.id, vaultHandle.name, user.faceId, new Date().toISOString());
-      const existingHandle = await prisma.handle.findUnique({ where: { name: vaultHandle.name } });
-
-      let handle;
-      if (existingHandle) {
-        handle = await prisma.handle.update({
-          where: { id: existingHandle.id },
-          data: { status: 'ACTIVE', ownerId: user.id, isVault: true, retiredAt: null },
-        });
-      } else {
-        handle = await prisma.handle.create({
-          data: {
-            name: vaultHandle.name,
-            baseWord: vaultHandle.baseWord,
-            tier: 'GOLDEN',
-            price: vaultHandle.buyNowPrice,
-            status: 'ACTIVE',
-            ownerId: user.id,
-            isVault: true,
-            handleHash,
-          },
-        });
-      }
-
-      const expiry = new Date();
-      expiry.setFullYear(expiry.getFullYear() + 1);
-
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          tier: 'VAULT',
-          registrationExpiry: expiry,
-          renewalAmount: vaultHandle.renewalFee,
-        },
-      });
-
-      await prisma.transaction.update({
-        where: { id: transaction.id },
-        data: { status: 'SUCCESS', handleId: handle.id },
-      });
-
-      await fireReferralCommission(transaction, user.id);
-      return res.status(200).send('OK');
-    }
-
-    // ========================================================
-    // VAULT_RENEWAL
-    // ========================================================
-    if (transaction.type === 'VAULT_RENEWAL') {
-      const user = await prisma.user.findUnique({ where: { id: transaction.userId } });
-      if (!user) return res.status(404).json({ error: 'User not found' });
-
-      const base = user.registrationExpiry && new Date(user.registrationExpiry) > new Date()
-        ? new Date(user.registrationExpiry)
-        : new Date();
-      base.setFullYear(base.getFullYear() + 1);
-
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { registrationExpiry: base },
-      });
-
-      await prisma.transaction.update({
-        where: { id: transaction.id },
-        data: { status: 'SUCCESS' },
-      });
-
-      await fireReferralCommission(transaction, user.id);
-      return res.status(200).send('OK');
-    }
-
-    // ========================================================
     // PREMIUM_PURCHASE
     // ========================================================
     if (transaction.type === 'PREMIUM_PURCHASE') {
@@ -307,9 +217,12 @@ exports.handleCallback = async (req, res) => {
         handle = await prisma.handle.update({
           where: { id: existingHandle.id },
           data: {
+            baseWord: data.baseWord,
+            numberSuffix: data.numberSuffix,
+            tier: data.tier,
+            price: data.handlePrice,
             status: 'ACTIVE',
             ownerId: user.id,
-            isVaultVariant: true,
             handleHash,
             retiredAt: null,
           },
@@ -324,7 +237,6 @@ exports.handleCallback = async (req, res) => {
             price: data.handlePrice,
             status: 'ACTIVE',
             ownerId: user.id,
-            isVaultVariant: true,
             handleHash,
           },
         });
@@ -378,6 +290,119 @@ exports.handleCallback = async (req, res) => {
     }
 
     // ========================================================
+    // TITLE_PURCHASE
+    // The account already exists. Admin has approved the request
+    // and issued this bill. On payment the handle is created and
+    // the TitleRequest is marked PAID.
+    // ========================================================
+    if (transaction.type === 'TITLE_PURCHASE') {
+      const data = transaction.pendingData;
+      if (!data?.handleName || !data?.titleRequestId) {
+        console.error('TITLE_PURCHASE missing data:', transaction.id);
+        return res.status(500).json({ error: 'Corrupt transaction data' });
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: transaction.userId },
+        include: { activeHandle: true },
+      });
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      if (user.activeHandle) {
+        await prisma.handle.update({
+          where: { id: user.activeHandle.id },
+          data: { status: 'RETIRED', retiredAt: new Date(), ownerId: null },
+        });
+      }
+
+      const handleHash = generateHandleHash(user.id, data.handleName, user.faceId, new Date().toISOString());
+      const existingHandle = await prisma.handle.findUnique({ where: { name: data.handleName } });
+
+      let handle;
+      if (existingHandle) {
+        handle = await prisma.handle.update({
+          where: { id: existingHandle.id },
+          data: {
+            baseWord: data.baseWord,
+            numberSuffix: data.numberSuffix,
+            tier: 'TITLE',
+            price: data.titlePrice,
+            status: 'ACTIVE',
+            ownerId: user.id,
+            isTitle: true,
+            handleHash,
+            retiredAt: null,
+          },
+        });
+      } else {
+        handle = await prisma.handle.create({
+          data: {
+            name: data.handleName,
+            baseWord: data.baseWord,
+            numberSuffix: data.numberSuffix,
+            tier: 'TITLE',
+            price: data.titlePrice,
+            status: 'ACTIVE',
+            ownerId: user.id,
+            isTitle: true,
+            handleHash,
+          },
+        });
+      }
+
+      const expiry = new Date();
+      expiry.setFullYear(expiry.getFullYear() + 1);
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          tier: 'TITLE',
+          registrationExpiry: expiry,
+          renewalAmount: data.renewalFee,
+        },
+      });
+
+      await prisma.titleRequest.update({
+        where: { id: data.titleRequestId },
+        data: { status: 'PAID', paidAt: new Date() },
+      });
+
+      await prisma.transaction.update({
+        where: { id: transaction.id },
+        data: { status: 'SUCCESS', handleId: handle.id },
+      });
+
+      await fireReferralCommission(transaction, user.id);
+      return res.status(200).send('OK');
+    }
+
+    // ========================================================
+    // TITLE_RENEWAL
+    // ========================================================
+    if (transaction.type === 'TITLE_RENEWAL') {
+      const user = await prisma.user.findUnique({ where: { id: transaction.userId } });
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      const base = user.registrationExpiry && new Date(user.registrationExpiry) > new Date()
+        ? new Date(user.registrationExpiry)
+        : new Date();
+      base.setFullYear(base.getFullYear() + 1);
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { registrationExpiry: base },
+      });
+
+      await prisma.transaction.update({
+        where: { id: transaction.id },
+        data: { status: 'SUCCESS' },
+      });
+
+      await fireReferralCommission(transaction, user.id);
+      return res.status(200).send('OK');
+    }
+
+    // ========================================================
     // REGISTRATION
     // Create everything in one transaction. If any step fails,
     // nothing is written and the row stays PENDING so a retry works.
@@ -404,7 +429,7 @@ exports.handleCallback = async (req, res) => {
           registrationExpiry: new Date(data.registrationExpiry),
           renewalAmount: data.renewalAmount,
           referralCode: data.referralCode || null,
-          tier: 'STANDARD',
+          tier: data.tier === 'STANDARD' ? 'STANDARD' : 'PREMIUM_VARIANT',
         },
       });
 
@@ -424,6 +449,10 @@ exports.handleCallback = async (req, res) => {
         handle = await tx.handle.update({
           where: { id: existingHandle.id },
           data: {
+            baseWord: data.baseWord,
+            numberSuffix: data.numberSuffix,
+            tier: data.tier,
+            price: data.handlePrice,
             status: 'ACTIVE',
             ownerId: newUser.id,
             handleHash,
@@ -649,167 +678,6 @@ exports.initiateRenewal = async (req, res) => {
   }
 };
 
-exports.initiateVaultPurchase = async (req, res) => {
-  try {
-    const { userId, vaultHandleName } = req.body;
-    if (!userId || !vaultHandleName) {
-      return res.status(400).json({ error: 'userId and vaultHandleName are required' });
-    }
-
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const vaultHandle = await prisma.vaultHandle.findUnique({
-      where: { name: vaultHandleName.toLowerCase() },
-    });
-    if (!vaultHandle) return res.status(404).json({ error: 'Vault handle not found' });
-    if (vaultHandle.status !== 'AVAILABLE') {
-      return res.status(409).json({ error: 'This vault handle is no longer available' });
-    }
-
-    const pricing = await getPricing();
-    const gatewayFee = pricing.GATEWAY_FEE || 1.00;
-    const totalAmount = vaultHandle.buyNowPrice;
-
-    const transaction = await prisma.transaction.create({
-      data: {
-        type: 'VAULT_PURCHASE',
-        status: 'PENDING',
-        amountRM: totalAmount,
-        userId: user.id,
-        referralCode: user.referralCode || null,
-        pendingData: {
-          userId: user.id,
-          vaultHandleId: vaultHandle.id,
-          vaultHandleName: vaultHandle.name,
-          renewalFee: vaultHandle.renewalFee,
-        },
-      },
-    });
-
-    const billData = new URLSearchParams({
-      userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
-      categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_VAULT,
-      billName: 'LiveID Vault Purchase',
-      billDescription: `Vault handle: liveid.asia/${vaultHandle.name}`,
-      billPriceSetting: 1,
-      billPayorInfo: 1,
-      billAmount: Math.round((totalAmount + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
-      billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
-      billExternalReferenceNo: transaction.id,
-      billTo: user.genericId,
-      billEmail: user.email,
-      billPhone: user.phone,
-      billSplitPayment: 0,
-      billPaymentChannel: '2',
-      billContentEmail: 'Thank you for purchasing your LiveID Vault handle.',
-    });
-
-    const toyyibResponse = await axios.post(
-      'https://toyyibpay.com/index.php/api/createBill',
-      billData.toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const billCode = toyyibResponse.data?.[0]?.BillCode;
-    if (!billCode) {
-      await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
-      return res.status(500).json({ error: 'Failed to create payment bill' });
-    }
-
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: { toyyibRef: billCode },
-    });
-
-    res.json({
-      transactionId: transaction.id,
-      paymentUrl: `https://toyyibpay.com/${billCode}`,
-    });
-  } catch (err) {
-    console.error('initiateVaultPurchase error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.initiateVaultRenewal = async (req, res) => {
-  try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId is required' });
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { vaultHandle: true },
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.vaultHandle) return res.status(400).json({ error: 'No vault handle found' });
-
-    const pricing = await getPricing();
-    const gatewayFee = pricing.GATEWAY_FEE || 1.00;
-    const renewalFee = user.vaultHandle.renewalFee;
-
-    const transaction = await prisma.transaction.create({
-      data: {
-        type: 'VAULT_RENEWAL',
-        status: 'PENDING',
-        amountRM: renewalFee,
-        userId: user.id,
-        referralCode: user.referralCode || null,
-        pendingData: {
-          userId: user.id,
-          vaultHandleId: user.vaultHandle.id,
-          renewalFee,
-        },
-      },
-    });
-
-    const billData = new URLSearchParams({
-      userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
-      categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_VAULT_RENEWAL,
-      billName: 'LiveID Vault Renewal',
-      billDescription: `Vault handle renewal: liveid.asia/${user.vaultHandle.name}`,
-      billPriceSetting: 1,
-      billPayorInfo: 1,
-      billAmount: Math.round((renewalFee + gatewayFee) * 100),
-      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
-      billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
-      billExternalReferenceNo: transaction.id,
-      billTo: user.genericId,
-      billEmail: user.email,
-      billPhone: user.phone,
-      billSplitPayment: 0,
-      billPaymentChannel: '2',
-      billContentEmail: 'Thank you for renewing your LiveID Vault handle.',
-    });
-
-    const toyyibResponse = await axios.post(
-      'https://toyyibpay.com/index.php/api/createBill',
-      billData.toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const billCode = toyyibResponse.data?.[0]?.BillCode;
-    if (!billCode) {
-      await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
-      return res.status(500).json({ error: 'Failed to create payment bill' });
-    }
-
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: { toyyibRef: billCode },
-    });
-
-    res.json({
-      transactionId: transaction.id,
-      paymentUrl: `https://toyyibpay.com/${billCode}`,
-    });
-  } catch (err) {
-    console.error('initiateVaultRenewal error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
 exports.initiatePremiumPurchase = async (req, res) => {
   try {
     const { userId, handleName } = req.body;
@@ -823,10 +691,6 @@ exports.initiatePremiumPurchase = async (req, res) => {
     const cleanName = handleName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (!cleanName) return res.status(400).json({ error: 'Invalid handle name' });
 
-    // Vault names are not buyable through the premium path
-    const isVault = await prisma.vaultHandle.findUnique({ where: { name: cleanName } });
-    if (isVault) return res.status(409).json({ error: 'This handle is only available through The Vault' });
-
     const existing = await prisma.handle.findUnique({ where: { name: cleanName } });
     if (existing && existing.status === 'ACTIVE') {
       return res.status(409).json({ error: 'This handle is already taken' });
@@ -838,6 +702,15 @@ exports.initiatePremiumPurchase = async (req, res) => {
     const { calculatePricing } = require('./handleController');
     const pricingResult = await calculatePricing(cleanName);
     if (!pricingResult) return res.status(400).json({ error: 'Invalid handle format' });
+
+    // Titles are not buyable through the premium path
+    if (pricingResult.blocked) {
+      return res.status(403).json({
+        error: 'This handle contains a conferred title and requires verification.',
+        title: pricingResult.title,
+        requestUrl: `/title-request?handle=${cleanName}`,
+      });
+    }
 
     const totalAmount = pricingResult.price;
 
@@ -855,7 +728,7 @@ exports.initiatePremiumPurchase = async (req, res) => {
           tier: pricingResult.tier,
           baseWord: pricingResult.baseWord,
           numberSuffix: pricingResult.numberSuffix,
-          renewalAmount: pricing.ANNUAL_RENEWAL || 28.00,
+          renewalAmount: pricingResult.renewalAmount,
         },
       },
     });
@@ -922,7 +795,7 @@ exports.initiatePremiumRenewal = async (req, res) => {
     }
 
     const pricing = await getPricing();
-    const renewalAmount = user.renewalAmount || pricing.ANNUAL_RENEWAL || 28.00;
+    const renewalAmount = user.renewalAmount || getRenewalAmount(user.activeHandle.tier, pricing);
     const gatewayFee = pricing.GATEWAY_FEE || 1.00;
 
     const transaction = await prisma.transaction.create({
@@ -982,6 +855,92 @@ exports.initiatePremiumRenewal = async (req, res) => {
     });
   } catch (err) {
     console.error('initiatePremiumRenewal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ============================================================
+// TITLE RENEWAL
+// Purchase is initiated by the admin on approval — see titleController.
+// ============================================================
+
+exports.initiateTitleRenewal = async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { activeHandle: true },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.activeHandle) return res.status(400).json({ error: 'No active handle found' });
+    if (user.tier !== 'TITLE') {
+      return res.status(400).json({ error: 'User is not on Title tier' });
+    }
+
+    const pricing = await getPricing();
+    const percent = pricing.TITLE_RENEWAL_PERCENT || 10;
+    const renewalAmount = user.renewalAmount || Math.round(user.activeHandle.price * (percent / 100));
+    const gatewayFee = pricing.GATEWAY_FEE || 1.00;
+
+    const transaction = await prisma.transaction.create({
+      data: {
+        type: 'TITLE_RENEWAL',
+        status: 'PENDING',
+        amountRM: renewalAmount,
+        userId: user.id,
+        handleId: user.activeHandle.id,
+        referralCode: user.referralCode || null,
+        pendingData: {
+          userId: user.id,
+          renewalAmount,
+        },
+      },
+    });
+
+    const billData = new URLSearchParams({
+      userSecretKey: process.env.TOYYIBPAY_SECRET_KEY,
+      categoryCode: process.env.TOYYIBPAY_CATEGORY_CODE_VAULT_RENEWAL,
+      billName: 'LiveID Title Renewal',
+      billDescription: `Title handle renewal: liveid.asia/${user.activeHandle.name}`,
+      billPriceSetting: 1,
+      billPayorInfo: 1,
+      billAmount: Math.round((renewalAmount + gatewayFee) * 100),
+      billReturnUrl: `${process.env.FRONTEND_URL}/en/payment/success?transactionId=${transaction.id}`,
+      billCallbackUrl: `${process.env.BACKEND_URL}/api/transactions/callback`,
+      billExternalReferenceNo: transaction.id,
+      billTo: user.genericId,
+      billEmail: user.email,
+      billPhone: user.phone,
+      billSplitPayment: 0,
+      billPaymentChannel: '2',
+      billContentEmail: 'Thank you for renewing your LiveID Title handle.',
+    });
+
+    const toyyibResponse = await axios.post(
+      'https://toyyibpay.com/index.php/api/createBill',
+      billData.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const billCode = toyyibResponse.data?.[0]?.BillCode;
+    if (!billCode) {
+      await prisma.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' } });
+      return res.status(500).json({ error: 'Failed to create renewal bill' });
+    }
+
+    await prisma.transaction.update({
+      where: { id: transaction.id },
+      data: { toyyibRef: billCode },
+    });
+
+    res.json({
+      transactionId: transaction.id,
+      paymentUrl: `https://toyyibpay.com/${billCode}`,
+    });
+  } catch (err) {
+    console.error('initiateTitleRenewal error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };

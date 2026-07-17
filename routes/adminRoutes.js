@@ -28,10 +28,6 @@ router.post('/referrals/:referralId/payout', adminController.markPayoutPaid);
 // Verify logs
 router.get('/verify-logs', adminController.getVerifyLogs);
 
-// Vault offers
-router.get('/vault-offers', adminController.getVaultOffers);
-router.put('/vault-offers/:offerId', adminController.updateVaultOffer);
-
 // Celebrity pipeline
 router.get('/celebrities', adminController.getCelebrities);
 router.post('/celebrities', adminController.createCelebrity);

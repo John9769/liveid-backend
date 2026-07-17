@@ -16,6 +16,7 @@ enum HandleTier {
   SPECIAL
   SILVER
   GOLDEN
+  TITLE
 }
 
 enum HandleStatus {
@@ -27,16 +28,16 @@ enum HandleStatus {
 enum UserTier {
   STANDARD
   PREMIUM_VARIANT
-  VAULT
+  TITLE
 }
 
 enum TransactionType {
   REGISTRATION
   RENEWAL
-  VAULT_PURCHASE
-  VAULT_RENEWAL
   PREMIUM_PURCHASE
   PREMIUM_RENEWAL
+  TITLE_PURCHASE
+  TITLE_RENEWAL
   REFERRAL_PAYOUT
 }
 
@@ -46,22 +47,17 @@ enum TransactionStatus {
   FAILED
 }
 
-enum VaultHandleTier {
-  VAULT
-  VAULT_VARIANT
+enum BlockedCategory {
+  TITLE
+  REAL_NAME
 }
 
-enum VaultHandleStatus {
-  AVAILABLE
-  SOLD
-  RESERVED
-}
-
-enum VaultOfferStatus {
+enum TitleRequestStatus {
   PENDING
-  ACCEPTED
+  APPROVED
   REJECTED
-  COUNTERED
+  PAID
+  EXPIRED
 }
 
 enum WaitlistType {
@@ -93,28 +89,34 @@ enum CelebrityHandleStatus {
 enum ReferralEarningType {
   STANDARD_REG
   STANDARD_RENEWAL
-  VAULT_PURCHASE
-  VAULT_RENEWAL
   PREMIUM_PURCHASE
   PREMIUM_RENEWAL
+  TITLE_PURCHASE
+  TITLE_RENEWAL
   OVERRIDE_STANDARD_REG
   OVERRIDE_STANDARD_RENEWAL
-  OVERRIDE_VAULT_PURCHASE
-  OVERRIDE_VAULT_RENEWAL
+  OVERRIDE_PREMIUM_PURCHASE
+  OVERRIDE_TITLE_PURCHASE
 }
 
 enum PricingKey {
   REGISTRATION_FEE
   STANDARD_HANDLE_BASE
+  CURATED_ADDON
   ANNUAL_RENEWAL
+  RENEWAL_SPECIAL
+  RENEWAL_SILVER
+  RENEWAL_GOLDEN
+  TITLE_RENEWAL_PERCENT
+  GATEWAY_FEE
   REFERRAL_STANDARD_REG
   REFERRAL_STANDARD_RENEWAL
-  REFERRAL_VAULT_PERCENT
-  GATEWAY_FEE
-  VAULT_RENEWAL_PERCENT
+  REFERRAL_PREMIUM_PERCENT
+  REFERRAL_TITLE_PERCENT
   SUPER_REFERRAL_STANDARD_REG
   SUPER_REFERRAL_STANDARD_RENEWAL
-  SUPER_REFERRAL_VAULT_PERCENT
+  SUPER_REFERRAL_PREMIUM_PERCENT
+  SUPER_REFERRAL_TITLE_PERCENT
 }
 
 // ============================================================
@@ -129,34 +131,28 @@ model User {
   passwordHash        String
   faceId              String    @unique
 
-  // Tier
   tier                UserTier  @default(STANDARD)
 
-  // Verification
   isVerified          Boolean   @default(false)
   verifiedAt          DateTime?
 
-  // Annual renewal
   registrationExpiry  DateTime?
   renewalAmount       Float?
 
-  // Referral tracking
   referralCode        String?
 
-  // Password reset
   resetToken          String?
   resetTokenExpiry    DateTime?
 
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  // Relations
   handleRequests      HandleRequest[]
   transactions        Transaction[]
   activeHandle        Handle?          @relation("ActiveHandle")
   profile             UserProfile?
   trustScore          TrustScore?
-  vaultHandle         VaultHandle?     @relation("VaultOwner")
+  titleRequests       TitleRequest[]
   celebrityHandle     CelebrityHandle? @relation("CelebrityHandleOwner")
 }
 
@@ -183,9 +179,7 @@ model Handle {
   price           Float
   status          HandleStatus @default(AVAILABLE)
 
-  // Vault flag
-  isVault         Boolean      @default(false)
-  isVaultVariant  Boolean      @default(false)
+  isTitle         Boolean      @default(false)
 
   ownerId         String?      @unique
   owner           User?        @relation("ActiveHandle", fields: [ownerId], references: [id])
@@ -196,57 +190,88 @@ model Handle {
 }
 
 model CuratedWord {
-  id                String     @id @default(uuid())
-  word              String     @unique
-  tier              HandleTier
-  basePrice         Float
+  id          String     @id @default(uuid())
+  word        String     @unique
+  tier        HandleTier
+  basePrice   Float
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+}
 
-  // Vault classification
-  isVault           Boolean    @default(false)
-  vaultPrice        Float?
-  vaultRenewalFee   Float?
-  vaultVariantPrice Float?
+model BlockedWord {
+  id          String          @id @default(uuid())
+  word        String          @unique
+  category    BlockedCategory
+  reason      String?
+  createdAt   DateTime        @default(now())
 
-  createdAt         DateTime   @default(now())
+  @@index([category])
 }
 
 // ============================================================
-// VAULT HANDLES
+// TITLES
 // ============================================================
 
-model VaultHandle {
-  id            String            @id @default(uuid())
-  name          String            @unique
-  tier          VaultHandleTier
-  baseWord      String
-  buyNowPrice   Float
-  reservePrice  Float
-  renewalFee    Float
-  status        VaultHandleStatus @default(AVAILABLE)
-
-  ownerId       String?           @unique
-  owner         User?             @relation("VaultOwner", fields: [ownerId], references: [id])
-
-  soldAt        DateTime?
-  createdAt     DateTime          @default(now())
-
-  offers        VaultOffer[]
+model TitlePrice {
+  id          String   @id @default(uuid())
+  title       String   @unique
+  label       String
+  price       Float
+  renewalFee  Float
+  requiresDoc Boolean  @default(true)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
-model VaultOffer {
-  id              String           @id @default(uuid())
-  vaultHandleId   String
-  vaultHandle     VaultHandle      @relation(fields: [vaultHandleId], references: [id])
+model TitleRequest {
+  id             String             @id @default(uuid())
+  userId         String?
+  user           User?              @relation(fields: [userId], references: [id])
 
-  name            String
-  phone           String
-  email           String
-  offerAmount     Float
-  message         String?
-  status          VaultOfferStatus @default(PENDING)
-  counterAmount   Float?
+  handleName     String
+  fullName       String
+  phone          String
+  email          String
 
-  createdAt       DateTime         @default(now())
+  title          String
+  awardYear      Int?
+  awardBody      String?
+  documentUrl    String
+
+  status         TitleRequestStatus @default(PENDING)
+  approvedPrice  Float?
+  renewalFee     Float?
+  adminNotes     String?
+  reviewedAt     DateTime?
+
+  toyyibRef      String?
+  paidAt         DateTime?
+
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([handleName])
+  @@index([status])
+}
+
+// ============================================================
+// SEARCH LOG
+// ============================================================
+
+model SearchLog {
+  id           String   @id @default(uuid())
+  query        String
+  matchedWord  String?
+  tier         String?
+  price        Float?
+  available    Boolean?
+  blocked      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([query])
+  @@index([createdAt])
 }
 
 // ============================================================
@@ -266,7 +291,6 @@ model Transaction {
   toyyibRef           String?
   pendingData         Json?
 
-  // Referral tracking
   referralCode        String?
   referralCommission  Float?
 
@@ -282,48 +306,41 @@ model Transaction {
 model Referral {
   id              String    @id @default(uuid())
   name            String
-  code            String?   @unique  // nullable — Super Referral only may not need a code
+  code            String?   @unique
   phone           String
   email           String
 
-  // Bank details for payout
   bankName        String?
   bankAccount     String?
   bankAccountName String?
 
-  // Referral type flags
-  isActiveReferral    Boolean   @default(true)   // has own referral link, earns direct commission
-  isSuperReferral     Boolean   @default(false)  // can recruit referrals, earns override commission
+  isActiveReferral      Boolean   @default(true)
+  isSuperReferral       Boolean   @default(false)
 
-  // Super Referral network — self referencing
-  superReferralId     String?
-  superReferral       Referral?  @relation("SuperReferralNetwork", fields: [superReferralId], references: [id])
-  subReferrals        Referral[] @relation("SuperReferralNetwork")
+  superReferralId       String?
+  superReferral         Referral?  @relation("SuperReferralNetwork", fields: [superReferralId], references: [id])
+  subReferrals          Referral[] @relation("SuperReferralNetwork")
 
-  // Follower count for records
-  minFollowers        Int?
+  minFollowers          Int?
 
-  // Direct earnings
-  totalEarnings       Float     @default(0)
-  totalPaid           Float     @default(0)
+  totalEarnings         Float     @default(0)
+  totalPaid             Float     @default(0)
 
-  // Override earnings — separate tracking
-  totalOverrideEarnings Float   @default(0)
-  totalOverridePaid     Float   @default(0)
+  totalOverrideEarnings Float     @default(0)
+  totalOverridePaid     Float     @default(0)
 
-  isActive            Boolean   @default(true)
-  invitedBy           String    @default("admin")
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  isActive              Boolean   @default(true)
+  invitedBy             String    @default("admin")
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  earnings            ReferralEarning[] @relation("DirectEarnings")
-  overrideEarnings    ReferralEarning[] @relation("OverrideEarnings")
+  earnings              ReferralEarning[] @relation("DirectEarnings")
+  overrideEarnings      ReferralEarning[] @relation("OverrideEarnings")
 }
 
 model ReferralEarning {
   id              String              @id @default(uuid())
 
-  // Direct referral
   referralId      String
   referral        Referral            @relation("DirectEarnings", fields: [referralId], references: [id])
 
@@ -334,11 +351,10 @@ model ReferralEarning {
   amount          Float
   type            ReferralEarningType
 
-  // Override commission fields
   isOverride          Boolean   @default(false)
-  overrideReferralId  String?   // Super Referral who gets the override
+  overrideReferralId  String?
   overrideReferral    Referral? @relation("OverrideEarnings", fields: [overrideReferralId], references: [id])
-  overrideAmount      Float?    // how much the Super Referral earns
+  overrideAmount      Float?
 
   isPaid          Boolean             @default(false)
   paidAt          DateTime?
@@ -364,7 +380,6 @@ model UserProfile {
   city        String?
   profession  String?
 
-  // Social media links
   instagram   String?
   tiktok      String?
   facebook    String?
@@ -420,7 +435,6 @@ model Celebrity {
   phone               String?
   email               String?
 
-  // Social media reach
   instagram           String?
   instagramFollowers  Int?
   tiktok              String?
@@ -429,18 +443,15 @@ model Celebrity {
   facebookFollowers   Int?
   totalReach          Int?
 
-  // Deal details
   proposedHandle      String?
   proposedPrice       Float?
   renewalFee          Float?
   status              CelebrityStatus @default(PROSPECT)
   notes               String?
 
-  // Network
   introducedBy        String?
   referralId          String?
 
-  // Deal closing
   dealClosedAt        DateTime?
   contractValue       Float?
 
@@ -524,7 +535,7 @@ model Invitation {
   phone           String
   name            String
   handle          String
-  role            String   // REFERRAL, SUPER_REFERRAL, BOTH
+  role            String
   superReferralId String?
   bankName        String?
   bankAccount     String?

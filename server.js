@@ -8,13 +8,13 @@ const authRoutes = require('./routes/authRoutes');
 const handleRoutes = require('./routes/handleRoutes');
 const transactionRoutes = require('./routes/transactionRoutes');
 const referralRoutes = require('./routes/referralRoutes');
-const vaultRoutes = require('./routes/vaultRoutes');
 const waitlistRoutes = require('./routes/waitlistRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const celebrityRoutes = require('./routes/celebrityRoutes');
 const pricingRoutes = require('./routes/pricingRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const inviteRoutes = require('./routes/inviteRoutes');
+const titleRoutes = require('./routes/titleRoutes');
 require('./cron');
 
 const app = express();
@@ -100,6 +100,7 @@ const registerLimiter = rateLimit({
 });
 app.use('/api/auth/verify-liveness', registerLimiter);
 app.use('/api/auth/start-verification', registerLimiter);
+app.use('/api/titles/request', registerLimiter);
 
 // ============================================================
 // HEALTH
@@ -126,13 +127,13 @@ app.use('/api/auth', authRoutes);
 app.use('/api/handles', handleRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/referrals', referralRoutes);
-app.use('/api/vault', vaultRoutes);
 app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/celebrities', celebrityRoutes);
 app.use('/api/pricing', pricingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/invites', inviteRoutes);
+app.use('/api/titles', titleRoutes);
 
 // ============================================================
 // 404 + ERROR HANDLER
@@ -154,6 +155,9 @@ app.use((err, req, res, next) => {
     return res.status(413).json({ error: 'File too large. Maximum size is 8MB.' });
   }
   if (err.message === 'Only image files are allowed') {
+    return res.status(400).json({ error: err.message });
+  }
+  if (err.message === 'Only image or PDF files are allowed') {
     return res.status(400).json({ error: err.message });
   }
   if (err.type === 'entity.too.large') {

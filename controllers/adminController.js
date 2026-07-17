@@ -7,18 +7,22 @@ const prisma = new PrismaClient();
 const VALID_PRICING_KEYS = [
   'REGISTRATION_FEE',
   'STANDARD_HANDLE_BASE',
+  'CURATED_ADDON',
   'ANNUAL_RENEWAL',
+  'RENEWAL_SPECIAL',
+  'RENEWAL_SILVER',
+  'RENEWAL_GOLDEN',
+  'TITLE_RENEWAL_PERCENT',
+  'GATEWAY_FEE',
   'REFERRAL_STANDARD_REG',
   'REFERRAL_STANDARD_RENEWAL',
-  'REFERRAL_VAULT_PERCENT',
-  'GATEWAY_FEE',
-  'VAULT_RENEWAL_PERCENT',
+  'REFERRAL_PREMIUM_PERCENT',
+  'REFERRAL_TITLE_PERCENT',
   'SUPER_REFERRAL_STANDARD_REG',
   'SUPER_REFERRAL_STANDARD_RENEWAL',
-  'SUPER_REFERRAL_VAULT_PERCENT',
+  'SUPER_REFERRAL_PREMIUM_PERCENT',
+  'SUPER_REFERRAL_TITLE_PERCENT',
 ];
-
-const VALID_VAULT_OFFER_STATUS = ['PENDING', 'ACCEPTED', 'REJECTED', 'COUNTERED'];
 const VALID_WAITLIST_STATUS = ['WAITING', 'NOTIFIED', 'CLAIMED', 'EXPIRED'];
 const VALID_CELEBRITY_STATUS = ['PROSPECT', 'CONTACTED', 'NEGOTIATING', 'CLOSED', 'DECLINED'];
 
@@ -193,7 +197,7 @@ exports.getTransactions = async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
     const skip = (pageNum - 1) * limitNum;
 
-    const VALID_TYPES = ['REGISTRATION', 'RENEWAL', 'VAULT_PURCHASE', 'VAULT_RENEWAL', 'PREMIUM_PURCHASE', 'PREMIUM_RENEWAL', 'REFERRAL_PAYOUT'];
+    const VALID_TYPES = ['REGISTRATION', 'RENEWAL', 'PREMIUM_PURCHASE', 'PREMIUM_RENEWAL', 'TITLE_PURCHASE', 'TITLE_RENEWAL', 'REFERRAL_PAYOUT'];
     const VALID_STATUS = ['PENDING', 'SUCCESS', 'FAILED'];
 
     if (type && !VALID_TYPES.includes(type)) {
@@ -445,60 +449,6 @@ exports.getVerifyLogs = async (req, res) => {
     res.json({ logs, total, page: pageNum, limit: limitNum });
   } catch (err) {
     console.error('getVerifyLogs error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// ============================================================
-// VAULT OFFERS
-// ============================================================
-
-exports.getVaultOffers = async (req, res) => {
-  try {
-    const offers = await prisma.vaultOffer.findMany({
-      include: { vaultHandle: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json({ offers });
-  } catch (err) {
-    console.error('getVaultOffers error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.updateVaultOffer = async (req, res) => {
-  try {
-    const { offerId } = req.params;
-    const { status, counterAmount } = req.body;
-
-    if (!status) return res.status(400).json({ error: 'status is required' });
-    if (!VALID_VAULT_OFFER_STATUS.includes(status)) {
-      return res.status(400).json({ error: `status must be one of: ${VALID_VAULT_OFFER_STATUS.join(', ')}` });
-    }
-
-    let parsedCounter = null;
-    if (counterAmount !== undefined && counterAmount !== null && counterAmount !== '') {
-      parsedCounter = parseFloat(counterAmount);
-      if (isNaN(parsedCounter) || parsedCounter < 0) {
-        return res.status(400).json({ error: 'counterAmount must be a number of 0 or more' });
-      }
-    }
-
-    if (status === 'COUNTERED' && parsedCounter === null) {
-      return res.status(400).json({ error: 'counterAmount is required when countering an offer' });
-    }
-
-    const existing = await prisma.vaultOffer.findUnique({ where: { id: offerId } });
-    if (!existing) return res.status(404).json({ error: 'Offer not found' });
-
-    const offer = await prisma.vaultOffer.update({
-      where: { id: offerId },
-      data: { status, counterAmount: parsedCounter },
-    });
-
-    res.json({ message: 'Offer updated', offer });
-  } catch (err) {
-    console.error('updateVaultOffer error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };

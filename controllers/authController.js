@@ -107,10 +107,7 @@ exports.startVerification = async (req, res) => {
     const cleanName = handleName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (!cleanName) return res.status(400).json({ error: 'Invalid handle name' });
 
-    const vaultHandle = await prisma.vaultHandle.findUnique({ where: { name: cleanName } });
-    if (vaultHandle) {
-      return res.status(409).json({ error: 'This handle is only available through The Vault' });
-    }
+    
 
     const existingHandle = await prisma.handle.findUnique({ where: { name: cleanName } });
     if (existingHandle && existingHandle.status === 'ACTIVE') {
@@ -130,11 +127,20 @@ exports.startVerification = async (req, res) => {
     const pricingResult = await calculatePricing(cleanName);
     if (!pricingResult) return res.status(400).json({ error: 'Invalid handle format' });
 
+    // Titles cannot be registered — they require documentary proof
+    if (pricingResult.blocked) {
+      return res.status(403).json({
+        error: 'This handle contains a conferred title and requires verification.',
+        title: pricingResult.title,
+        requestUrl: `/title-request?handle=${cleanName}`,
+      });
+    }
+
     const pricing = await getPricing();
     const registrationFee = pricing.REGISTRATION_FEE || 6.90;
     const gatewayFee = pricing.GATEWAY_FEE || 1.00;
     const handlePrice = pricingResult.price;
-    const renewalAmount = pricing.ANNUAL_RENEWAL || 28.00;
+    const renewalAmount = pricingResult.renewalAmount;
     const totalAmount = registrationFee + handlePrice + gatewayFee;
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -505,6 +511,7 @@ exports.deleteAccount = async (req, res) => {
 
       await tx.trustScore.deleteMany({ where: { userId } });
       await tx.handleRequest.deleteMany({ where: { userId } });
+      await tx.titleRequest.deleteMany({ where: { userId } });
       await tx.transaction.deleteMany({ where: { userId } });
       await tx.user.delete({ where: { id: userId } });
     });

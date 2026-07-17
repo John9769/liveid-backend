@@ -10,7 +10,7 @@ router.post('/', celebrityController.createCelebrity);
 router.get('/', celebrityController.getAllCelebrities);
 
 // Handle reservation routes — declared before /:id
-router.post('/:id/handles', celebrityController.createCelebrityHandle);
+router.post('/:celebrityId/handles', celebrityController.createCelebrityHandle);
 router.patch('/handles/:handleId', celebrityController.updateCelebrityHandle);
 router.delete('/handles/:handleId', celebrityController.deleteCelebrityHandle);
 
