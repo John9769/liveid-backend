@@ -153,6 +153,7 @@ model User {
   profile             UserProfile?
   trustScore          TrustScore?
   titleRequests       TitleRequest[]
+  shopItems           ShopItem[]
   celebrityHandle     CelebrityHandle? @relation("CelebrityHandleOwner")
 }
 
@@ -388,8 +389,36 @@ model UserProfile {
   whatsapp    String?
   website     String?
 
+  // Shop
+  shopActive  Boolean  @default(false)
+  shopTitle   String?
+  shopArea    String?
+  shopAbout   String?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// ============================================================
+// SHOP
+// ============================================================
+
+model ShopItem {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  name        String
+  price       String?
+  detail      String?
+  hasImages   Boolean  @default(false)
+  isAvailable Boolean  @default(true)
+
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // ============================================================

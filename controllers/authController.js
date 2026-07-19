@@ -512,6 +512,7 @@ exports.deleteAccount = async (req, res) => {
       await tx.trustScore.deleteMany({ where: { userId } });
       await tx.handleRequest.deleteMany({ where: { userId } });
       await tx.titleRequest.deleteMany({ where: { userId } });
+      await tx.shopItem.deleteMany({ where: { userId } });
       await tx.transaction.deleteMany({ where: { userId } });
       await tx.user.delete({ where: { id: userId } });
     });

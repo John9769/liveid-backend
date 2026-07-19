@@ -46,6 +46,12 @@ exports.getProfile = async (req, res) => {
 
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
+    // Shop items for the editor to load
+    const shopItems = await prisma.shopItem.findMany({
+      where: { userId },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+
     const { user, ...rest } = profile;
     const safeUser = user
       ? {
@@ -60,7 +66,7 @@ exports.getProfile = async (req, res) => {
         }
       : null;
 
-    res.json({ profile: { ...rest, user: safeUser } });
+    res.json({ profile: { ...rest, user: safeUser, shopItems } });
   } catch (err) {
     console.error('getProfile error:', err.message);
     res.status(500).json({ error: err.message });
@@ -75,6 +81,7 @@ exports.upsertProfile = async (req, res) => {
       instagram, tiktok, facebook, twitter,
       youtube, whatsapp, website,
       photoPublic,
+      shopActive, shopTitle, shopArea, shopAbout,
     } = req.body;
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -97,6 +104,12 @@ exports.upsertProfile = async (req, res) => {
       // The member decides whether their verified photo is shown to
       // anonymous visitors. Private is the default.
       photoPublic: photoPublic === true,
+
+      // Shop — the seller's mini storefront on their verification page
+      shopActive: shopActive === true,
+      shopTitle: shopTitle ?? null,
+      shopArea: shopArea ?? null,
+      shopAbout: shopAbout ?? null,
     };
 
     const profile = await prisma.userProfile.upsert({
@@ -248,6 +261,23 @@ exports.getPublicProfile = async (req, res) => {
     const p = user.profile;
     const isMember = !!viewerId;
 
+    // Shop — only if the seller switched it on. Available items only;
+    // sold/unavailable ones are hidden from the buyer.
+    let shop = null;
+    if (p?.shopActive) {
+      const items = await prisma.shopItem.findMany({
+        where: { userId: user.id, isAvailable: true },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        select: { id: true, name: true, price: true, detail: true, hasImages: true },
+      });
+      shop = {
+        title: p.shopTitle || null,
+        area: p.shopArea || null,
+        about: p.shopAbout || null,
+        items,
+      };
+    }
+
     res.json({
       verified: true,
       handle: handle.name,
@@ -278,6 +308,8 @@ exports.getPublicProfile = async (req, res) => {
 
       isReferral: !!referral,
       referralCode: referral?.code || null,
+
+      shop,
     });
   } catch (err) {
     console.error('getPublicProfile error:', err.message);

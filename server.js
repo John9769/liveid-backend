@@ -15,6 +15,7 @@ const pricingRoutes = require('./routes/pricingRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const inviteRoutes = require('./routes/inviteRoutes');
 const titleRoutes = require('./routes/titleRoutes');
+const shopRoutes = require('./routes/shopRoutes');
 require('./cron');
 
 const app = express();
@@ -134,6 +135,7 @@ app.use('/api/pricing', pricingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/titles', titleRoutes);
+app.use('/api/shop', shopRoutes);
 
 // ============================================================
 // 404 + ERROR HANDLER
