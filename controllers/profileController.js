@@ -370,7 +370,7 @@ exports.getPublicProfile = async (req, res) => {
     // "both match" or "all three match" without ever counting a check
     // that was never shown.
     const checksAvailable =
-      1 + // face — always a check, even when locked
+      (p?.photoUrl ? 1 : 0) +
       (hasSocial ? 1 : 0) +
       (whatsappPublic || whatsappCheckAvailable ? 1 : 0);
 
@@ -389,6 +389,10 @@ exports.getPublicProfile = async (req, res) => {
       // photos show only to logged-in LiveID members.
       photoUrl: (p?.photoPublic || isMember) ? (p?.photoUrl || null) : null,
       photoLocked: !isMember && !p?.photoPublic && !!p?.photoUrl,
+      // Legacy accounts from before the selfie was mandatory. The page
+      // must say "no photo on file" rather than render an empty box,
+      // and must not count a face check it cannot offer.
+      hasPhoto: !!p?.photoUrl,
       viewerIsMember: isMember,
 
       displayName: p?.displayName || null,

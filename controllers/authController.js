@@ -100,6 +100,15 @@ exports.startVerification = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Rule one. A LiveID without a face is not a verification, it is
+    // a paid username. The selfie is what makes registering costly
+    // enough that a scammer will not do it. Capture is mandatory —
+    // whether the photo is shown to anonymous visitors is the
+    // owner's choice, set later in their profile.
+    if (!photoUrl) {
+      return res.status(400).json({ error: 'A verified selfie is required to register' });
+    }
+
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
