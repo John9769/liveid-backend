@@ -414,10 +414,16 @@ exports.getMyHandle = async (req, res) => {
 };
 
 // ============================================================
-// VERIFY HANDLE
+// VERIFY HANDLE — REMOVED
+//
+// This returned the owner's photo and WhatsApp number to anyone,
+// logged in or not, with no viewer check. The verification page
+// is now served by GET /api/profile/public/:handleName which
+// gates the photo and never releases the number unless the owner
+// set it to PUBLIC.
 // ============================================================
 
-exports.verifyHandle = async (req, res) => {
+const _removedVerifyHandle = async (req, res) => {
   try {
     const { handleName } = req.params;
     const handle = await prisma.handle.findUnique({

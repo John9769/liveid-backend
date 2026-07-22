@@ -18,7 +18,14 @@ router.get('/admin/search-log', adminAuth, handleController.getSearchLog);
 // Public
 router.get('/search', handleController.searchHandle);
 router.get('/billboard', handleController.getBillboard);
-router.get('/verify/:handleName', handleController.verifyHandle);
+
+// REMOVED: GET /verify/:handleName
+// This route served handleController.verifyHandle, which returned the
+// owner's photo and WhatsApp number to anyone, logged in or not, with
+// no viewer check of any kind. The verification page is now served by
+// GET /api/profile/public/:handleName, which gates the photo and never
+// releases the number unless the owner set it to PUBLIC.
+// Delete the verifyHandle function from handleController.js too.
 
 // Authenticated — own account only
 router.post('/purchase', userAuth, userAuth.ownsResource, handleController.purchaseHandle);

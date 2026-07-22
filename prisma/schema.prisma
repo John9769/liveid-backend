@@ -72,6 +72,12 @@ enum WaitlistStatus {
   EXPIRED
 }
 
+enum WhatsappMode {
+  HIDDEN
+  MATCH_ONLY
+  PUBLIC
+}
+
 enum CelebrityStatus {
   PROSPECT
   CONTACTED
@@ -387,6 +393,8 @@ model UserProfile {
   twitter     String?
   youtube     String?
   whatsapp    String?
+  whatsappE164 String?
+  whatsappMode WhatsappMode @default(MATCH_ONLY)
   website     String?
 
   // Shop
@@ -543,6 +551,18 @@ model VerifyLog {
 // ============================================================
 // ADMIN
 // ============================================================
+
+model MatchAttempt {
+  id          String   @id @default(uuid())
+  handleName  String
+  ip          String?
+  viewerId    String?
+  matched     Boolean
+  createdAt   DateTime @default(now())
+
+  @@index([handleName, ip, createdAt])
+  @@index([handleName, createdAt])
+}
 
 model Admin {
   id           String   @id @default(uuid())
