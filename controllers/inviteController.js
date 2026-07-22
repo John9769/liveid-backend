@@ -190,6 +190,14 @@ exports.acceptInvitation = async (req, res) => {
     if (!faceId || !password) {
       return res.status(400).json({ error: 'faceId and password are required' });
     }
+
+    // Rule one, and it applies to invited referrals too. A LiveID without
+    // a face is not a verification, it is a free username. Referrals are
+    // the people we ask sellers to trust — their own page has to be the
+    // strongest one on the platform, not the weakest.
+    if (!photoUrl) {
+      return res.status(400).json({ error: 'A verified selfie is required to complete onboarding' });
+    }
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
@@ -288,7 +296,7 @@ exports.acceptInvitation = async (req, res) => {
       }
 
       await tx.userProfile.create({
-        data: { userId: user.id, photoUrl: photoUrl || null },
+        data: { userId: user.id, photoUrl },
       });
 
       await tx.trustScore.create({
